@@ -191,6 +191,22 @@ class ContactPage(TemplateView):
     template_name = "products/contact.html"
 
 
+class CompanyDashboard(DetailView):
+    template_name = "products/company_dashboard.html"
+    model = Company
+    context_object_name = "company"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+
+        products_by_company = self.object.product_set.order_by(
+            "ce_status", "product_name"
+        )
+        context.update({"products_by_company": products_by_company})
+
+        return context
+
+
 class ImportDataView(PermissionRequiredMixin, FormView):
     template_name = "products/import_data.html"
     form_class = ImportForm

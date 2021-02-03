@@ -1,0 +1,116 @@
+{% extends 'products/base.html' %}
+{% load static %}
+
+{% block meta_social %}
+  <meta name="title" content="AI for Radiology">
+  <meta property="og:title" content="AI for Radiology" />
+  {% if company.logo %}
+    <meta property="og:image" content= "{{company.logo.url}}" />
+  {% endif %}
+  <meta property="og:description" content= "Find out more about {{company.company_name}}"/>
+{% endblock %}
+
+{% block title %}
+    {{company.company_name}} - {{ block.super }}
+{% endblock %}
+
+{% block content %}
+
+  <div class="container pl-0">
+    <div class="row">
+      <div class="col-sm-10 pb-5">
+        <div class="h1 mb-1"> Dashboard </div>
+      </div>
+
+      <div class="col-sm-2">
+        <div>
+          {% if company.logo %}
+            <img src="{{company.logo.url}}" alt="Logo" style="width:100%">
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2 class="h4 text-radboud">Company</h2>
+    <div class="container">
+      <div class="row py-4 border-top">
+        <div class="col-sm-6">
+          <div class="h3 mb-1"> <a href= "{% url 'products:company-detail' slug=company.slug %}" title={{company.company_name}}>{{company.company_name}}</a></div>
+        </div>
+
+        <div class="col-sm-4">
+          <!-- product.update_status - needs model -->
+          <div>
+            <i class="fas fa-exclamation-triangle text-radboud"></i>
+            Change requested
+          </div>
+          <div>
+            <i class="fas fa-exclamation-triangle text-radboud"></i>
+            Change in need of approval
+          </div>
+          <div>
+            <i class="far fa-hourglass text-muted"></i>
+            Waiting for approval
+          </div>
+        </div>
+
+        <div class="col-sm-2">
+          <div class="d-flex justify-content-between flex-column h-100">
+            <div class="pt-1 pb-2">
+              <a href="{% url 'products:company-detail' slug=company.slug %}" title="{{company.company_name}}" class="btn btn-square btn-radboud">
+                <i class="fas fa-edit"></i>
+                Edit</a>
+            </div>
+          </div>
+        </div>
+      </div>
+  </div>
+
+  <h2 class="h4 text-radboud">Products</h2>
+  
+  <div class="pt-1 pb-2">
+    <a href="{% url 'products:company-detail' slug=company.slug %}" title="Add product" class="btn btn-square btn-radboud">
+      <i class="fas fa-plus"></i>
+      Add a new product</a>
+  </div>
+
+  <div class="container">
+    {% for product in products_by_company %}
+      <div class="row py-4 border-top">
+        <div class="col-sm-6">
+          <div class="h3 mb-1"> <a href= "{% url 'products:product-detail' slug=product.slug %}" title={{product.product_name}}>{{product.product_name}}</a></div>
+        </div>
+
+        <div class="col-sm-4">
+          <!-- product.update_status - needs model -->
+          <div>
+            <i class="fas fa-exclamation-triangle text-radboud"></i>
+            Change requested
+          </div>
+          <div>
+            <i class="fas fa-exclamation-triangle text-radboud"></i>
+            Change in need of approval
+          </div>
+          <div>
+            <i class="far fa-hourglass text-muted"></i>
+            Waiting for approval
+          </div>
+        </div>
+  
+  
+        <div class="col-sm-2">
+          <div class="d-flex justify-content-between flex-column h-100">
+            <div class="pt-1 pb-2">
+              <a href="{% url 'products:product-detail' slug=product.slug %}" title="{{product.product_name}}" class="btn btn-square btn-radboud">
+                <i class="fas fa-edit"></i>
+                Edit</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+  
+
+{% endblock %}
