@@ -183,6 +183,29 @@ class CompanyDetail(DetailView):
         return context
 
 
+class AccountSettings(DetailView):
+    # template_name = "products/account_settings.html"
+    # model = Company
+    # context_object_name = "company"
+
+    # To be created model
+    # model = User
+
+    template_name = "products/account_settings.html"
+    model = Company
+    context_object_name = "company"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+
+        products_by_company = self.object.product_set.order_by(
+            "ce_status", "product_name"
+        )
+        context.update({"products_by_company": products_by_company})
+
+        return context
+
+
 class AboutPage(TemplateView):
     template_name = "products/about.html"
 

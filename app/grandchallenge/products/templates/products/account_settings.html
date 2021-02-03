@@ -1,0 +1,20 @@
+{% extends 'products/base.html' %}
+{% load static %}
+
+{% block title %}
+    {{company.company_name}} - {{ block.super }}
+{% endblock %}
+
+{% block content %}
+
+  <div class="container pl-0">
+    <div class="row">
+      <div class="col-sm-10 pb-5">
+        <div class="h1 mb-1"> Account settings </div>
+        <div> Name, Email, Monthly newsletter, Notifications </div>
+      </div>
+    </div>
+</div>
+
+
+{% endblock %}

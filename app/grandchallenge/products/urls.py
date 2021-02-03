@@ -2,6 +2,7 @@ from django.urls import path
 
 from grandchallenge.products.views import (
     AboutPage,
+    AccountSettings,
     CompanyDetail,
     CompanyList,
     ContactPage,
@@ -20,4 +21,9 @@ urlpatterns = [
     path("product/<slug>/", ProductDetail.as_view(), name="product-detail"),
     path("company/<slug>/", CompanyDetail.as_view(), name="company-detail"),
     path("import-data/", ImportDataView.as_view(), name="import-data"),
+    path(
+        "account-settings/<slug>",
+        AccountSettings.as_view(),
+        name="account-settings",
+    ),
 ]
