@@ -53,3 +53,13 @@ ul li {
     background-color: #00afdc;
     opacity: 0.2;
 }
+
+.custom-checkbox .custom-control-input:checked ~ .custom-control-label::before {
+    border-color: #00afdc;
+    background-color: #00afdc;
+  }
+
+.checkbox:checked+label:before {
+    border-color: #00afdc;
+    background-color: #00afdc;
+}

@@ -9,9 +9,52 @@
 
   <div class="container pl-0">
     <div class="row">
-      <div class="col-sm-10 pb-5">
-        <div class="h1 mb-1"> Account settings </div>
-        <div> Name, Email, Monthly newsletter, Notifications </div>
+      <div class="col-sm-6 pb-5">
+        <div class="h1 mb-5"> Account settings </div>
+
+        <form class="mb-5" action="" method="GET">
+
+            <div class="form-group">
+                <label for="nameInput"> Name </label>
+                <input class="form-control" id="nameInput" type="text" placeholder="Enter name" value="Kicky van Leeuwen" >
+            </div>
+
+            <div class="form-group">
+                <label for="emailInput"> Email </label>
+                <input class="form-control" id="emailInput" type="email" placeholder="Enter email" value="kicky.vanleeuwen@radboudumc.nl" >
+            </div>
+
+            <div class="form-group">
+                <label for="passwordInput"> Password </label>
+                <input class="form-control" id="passwordInput" type="password" placeholder="Password" value="blabla" >
+            </div>
+
+            <div class="form-check">
+                <input type="checkbox" class="form-check-input" id="newsletterCheck" checked>
+                <label class="form-check-label" for="newsletterCheck">I would like to receive the monthly newsletter on the developments in AI in radiology</label>
+            </div>
+
+            <fieldset class="form-group mt-3">
+                <legend class="h5">Email notification</legend>
+                <div class="form-check custom-checkbox">
+                    <input type="checkbox" class="custom-control-input" id="changeRequestedCheck" checked>
+                    <label class="custom-control-label" for="changeRequestedCheck">When change is requested</label>
+                </div>
+                <div class="form-check">
+                    <input type="checkbox" class="form-check-input" id="changeConfirmationCheck" data-onstyle="text-radboud" checked>
+                    <label class="form-check-label" for="changeConfirmationCheck">When proposed changes need confirmation</label>
+                </div>
+                <div class="form-check">
+                    <input type="checkbox" class="form-check-input" id="changeApprovedCheck" checked>
+                    <label class="form-check-label" for="changeApprovedCheck">When changes have been approved</label>
+                </div>
+
+            </fieldset>
+
+        </form>
+        <div>
+            <input type="submit" class="btn btn-dark btn-square" value="Save">
+        </div>
       </div>
     </div>
 </div>
