@@ -21,5 +21,9 @@ urlpatterns = [
     path("product/<slug>/", ProductDetail.as_view(), name="product-detail"),
     path("company/<slug>/", CompanyDetail.as_view(), name="company-detail"),
     path("import-data/", ImportDataView.as_view(), name="import-data"),
-    path("dashboard/", CompanyDashboard.as_view(), name="company-dashboard"),
+    path(
+        "dashboard/<slug>",
+        CompanyDashboard.as_view(),
+        name="company-dashboard",
+    ),
 ]
