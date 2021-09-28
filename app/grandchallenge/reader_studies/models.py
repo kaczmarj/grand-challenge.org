@@ -885,6 +885,16 @@ def delete_reader_study_groups_hook(*_, instance: ReaderStudy, using, **__):
         pass
 
 
+class DisplaySet(UUIDModel):
+    reader_study = models.ForeignKey(
+        ReaderStudy, on_delete=models.PROTECT, related_name="display_sets"
+    )
+    images = models.ManyToManyField("cases.Image", related_name="display_sets")
+
+    class Meta:
+        ordering = ("created",)
+
+
 class Question(UUIDModel):
     class AnswerType(models.TextChoices):
         # WARNING: Do not change the display text, these are used in the front end

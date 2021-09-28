@@ -2,6 +2,7 @@ from django.conf.urls import include
 from django.urls import path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from rest_framework import routers
+from rest_framework_nested import routers as routers_nested
 
 from grandchallenge.algorithms.views import (
     AlgorithmImageViewSet,
@@ -24,6 +25,7 @@ from grandchallenge.notifications.views import (
 from grandchallenge.profiles.views import UserProfileViewSet
 from grandchallenge.reader_studies.views import (
     AnswerViewSet,
+    DisplaySetViewSet,
     QuestionViewSet,
     ReaderStudyViewSet,
 )
@@ -47,6 +49,7 @@ from grandchallenge.workstations.views import SessionViewSet
 app_name = "api"
 
 router = routers.DefaultRouter()
+nested_router = routers_nested.SimpleRouter()
 
 # Algorithms
 router.register(
@@ -96,7 +99,15 @@ router.register(
     QuestionViewSet,
     basename="reader-studies-question",
 )
-router.register(r"reader-studies", ReaderStudyViewSet, basename="reader-study")
+nested_router.register(
+    r"reader-studies", ReaderStudyViewSet, basename="reader-study"
+)
+rs_router = routers_nested.NestedSimpleRouter(
+    nested_router, r"reader-studies", lookup="reader_study"
+)
+rs_router.register(
+    r"display-sets", DisplaySetViewSet, basename="reader-study-display-sets"
+)
 
 # Retina
 router.register(
@@ -178,6 +189,8 @@ urlpatterns = [
     # Do not namespace the router.urls without updating the view names in
     # the serializers
     path("v1/", include(router.urls)),
+    path("v1/", include(nested_router.urls)),
+    path("v1/", include(rs_router.urls)),
     path("v1/github/", github_webhook, name="github-webhook"),
     path("v1/timezone/", TimezoneAPIView.as_view(), name="timezone"),
     path(

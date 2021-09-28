@@ -98,6 +98,7 @@ django-permissions-policy = "*"
 aws-xray-sdk = "*"
 django-deprecate-fields = "*"
 django-add-default-value = "*"
+drf-nested-routers = "*"
 
 [tool.poetry.dev-dependencies]
 pytest-django = "*"

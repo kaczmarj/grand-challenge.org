@@ -13,6 +13,7 @@ from grandchallenge.components.schemas import ANSWER_TYPE_SCHEMA
 from grandchallenge.reader_studies.models import (
     Answer,
     CategoricalOption,
+    DisplaySet,
     Question,
     ReaderStudy,
 )
@@ -23,6 +24,16 @@ class CategoricalOptionSerializer(ModelSerializer):
     class Meta:
         model = CategoricalOption
         fields = ("id", "title", "default")
+
+
+class DisplaySetSerializer(ModelSerializer):
+    images = HyperlinkedRelatedField(
+        many=True, queryset=Image.objects.all(), view_name="api:image-detail"
+    )
+
+    class Meta:
+        model = DisplaySet
+        fields = ("id", "images")
 
 
 class QuestionSerializer(HyperlinkedModelSerializer):
