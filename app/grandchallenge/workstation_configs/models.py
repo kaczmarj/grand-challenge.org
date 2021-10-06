@@ -10,7 +10,7 @@ from django_extensions.db.models import TitleSlugDescriptionModel
 from guardian.shortcuts import assign_perm
 
 from grandchallenge.core.models import UUIDModel
-from grandchallenge.core.validators import JSONSchemaValidator
+from grandchallenge.core.validators import JSONValidator
 from grandchallenge.subdomains.utils import reverse
 
 OVERLAY_SEGMENTS_SCHEMA = {
@@ -124,32 +124,24 @@ KEY_BINDINGS_SCHEMA = {
 
 
 class WorkstationConfig(TitleSlugDescriptionModel, UUIDModel):
-    ORIENTATION_AXIAL = "A"
-    ORIENTATION_CORONAL = "C"
-    ORIENTATION_SAGITTAL = "S"
+    class Orientation(models.TextChoices):
+        AXIAL = "A", "Axial"
+        CORONAL = "C", "Coronal"
+        SAGITTAL = "S", "Sagittal"
 
-    ORIENTATION_CHOICES = (
-        (ORIENTATION_AXIAL, "Axial"),
-        (ORIENTATION_CORONAL, "Coronal"),
-        (ORIENTATION_SAGITTAL, "Sagittal"),
-    )
+    class SlabRenderMethod(models.TextChoices):
+        MAXIMUM = "MAX", "Maximum"
+        MINIMUM = "MIN", "Minimum"
+        AVERAGE = "AVG", "Average"
 
-    SLAB_RENDER_METHOD_MAXIMUM = "MAX"
-    SLAB_RENDER_METHOD_MINIMUM = "MIN"
-    SLAB_RENDER_METHOD_AVERAGE = "AVG"
+    class ImageContext(models.TextChoices):
+        PATHOLOGY = "PATH", "Pathology"
+        OPHTHALMOLOGY = "OPHTH", "Ophthalmology"
+        MPMRI = "MPMRI", "Multiparametric MRI"
 
-    SLAB_RENDER_METHOD_CHOICES = (
-        (SLAB_RENDER_METHOD_MAXIMUM, "Maximum"),
-        (SLAB_RENDER_METHOD_MINIMUM, "Minimum"),
-        (SLAB_RENDER_METHOD_AVERAGE, "Average"),
-    )
-
-    IMAGE_INTERPOLATION_TYPE_NEAREST = "NN"
-    IMAGE_INTERPOLATION_TYPE_TRILINEAR = "TL"
-    IMAGE_INTERPOLATION_TYPE_CHOICES = (
-        (IMAGE_INTERPOLATION_TYPE_NEAREST, "NearestNeighbor"),
-        (IMAGE_INTERPOLATION_TYPE_TRILINEAR, "Trilinear"),
-    )
+    class ImageInterpolationType(models.TextChoices):
+        NEAREST = "NN", "NearestNeighbor"
+        TRILINEAR = "TL", "Trilinear"
 
     creator = models.ForeignKey(
         get_user_model(), null=True, on_delete=models.SET_NULL
@@ -160,12 +152,17 @@ class WorkstationConfig(TitleSlugDescriptionModel, UUIDModel):
         blank=True,
         related_name="workstation_window_presets",
     )
+
     default_window_preset = models.ForeignKey(
         to="WindowPreset",
         blank=True,
         null=True,
         on_delete=models.SET_NULL,
         related_name="workstation_default_window_presets",
+    )
+
+    image_context = models.CharField(
+        blank=True, max_length=6, choices=ImageContext.choices
     )
 
     # 4 digits, 2 decimal places, 0.01 min, 99.99 max
@@ -176,23 +173,30 @@ class WorkstationConfig(TitleSlugDescriptionModel, UUIDModel):
         decimal_places=2,
         validators=[MinValueValidator(limit_value=0.01)],
     )
+
     default_slab_render_method = models.CharField(
-        max_length=3, choices=SLAB_RENDER_METHOD_CHOICES, blank=True
+        max_length=3, choices=SlabRenderMethod.choices, blank=True
     )
 
     default_orientation = models.CharField(
-        max_length=1, choices=ORIENTATION_CHOICES, blank=True
+        max_length=1, choices=Orientation.choices, blank=True
+    )
+
+    overlay_luts = models.ManyToManyField(
+        to="LookUpTable", blank=True, related_name="workstation_overlay_luts"
     )
 
     default_overlay_lut = models.ForeignKey(
         to="LookUpTable", blank=True, null=True, on_delete=models.SET_NULL
     )
+
     default_overlay_interpolation = models.CharField(
         max_length=2,
-        choices=IMAGE_INTERPOLATION_TYPE_CHOICES,
-        default=IMAGE_INTERPOLATION_TYPE_NEAREST,
+        choices=ImageInterpolationType.choices,
+        default=ImageInterpolationType.NEAREST,
         blank=True,
     )
+
     # 3 digits, 2 decimal places, 0.00 min, 1.00 max
     default_overlay_alpha = models.DecimalField(
         blank=True,
@@ -208,13 +212,13 @@ class WorkstationConfig(TitleSlugDescriptionModel, UUIDModel):
     overlay_segments = models.JSONField(
         default=list,
         blank=True,
-        validators=[JSONSchemaValidator(schema=OVERLAY_SEGMENTS_SCHEMA)],
+        validators=[JSONValidator(schema=OVERLAY_SEGMENTS_SCHEMA)],
     )
 
     key_bindings = models.JSONField(
         default=list,
         blank=True,
-        validators=[JSONSchemaValidator(schema=KEY_BINDINGS_SCHEMA)],
+        validators=[JSONValidator(schema=KEY_BINDINGS_SCHEMA)],
     )
 
     # 4 digits, 2 decimal places, 0.01 min, 99.99 max
@@ -228,10 +232,28 @@ class WorkstationConfig(TitleSlugDescriptionModel, UUIDModel):
 
     show_image_info_plugin = models.BooleanField(default=True)
     show_display_plugin = models.BooleanField(default=True)
+    show_image_switcher_plugin = models.BooleanField(default=True)
+    show_algorithm_output_plugin = models.BooleanField(
+        default=True,
+        help_text="Show algorithm outputs with navigation controls",
+    )
+    show_overlay_plugin = models.BooleanField(default=True)
     show_invert_tool = models.BooleanField(default=True)
     show_flip_tool = models.BooleanField(default=True)
     show_window_level_tool = models.BooleanField(default=True)
     show_reset_tool = models.BooleanField(default=True)
+    show_overlay_selection_tool = models.BooleanField(default=True)
+    show_lut_selection_tool = models.BooleanField(default=True)
+
+    enable_contrast_enhancement = models.BooleanField(
+        default=False,
+        verbose_name="Enable contrast enhancement preprocessing (fundus)",
+    )
+    auto_jump_center_of_gravity = models.BooleanField(
+        default=True,
+        help_text="Jump to center of gravity of first output when viewing algorithm "
+        "results or the first overlay segment when viewing a reader study",
+    )
 
     class Meta(TitleSlugDescriptionModel.Meta, UUIDModel.Meta):
         ordering = ("created", "creator")
@@ -256,18 +278,90 @@ class WorkstationConfig(TitleSlugDescriptionModel, UUIDModel):
 
 class WindowPreset(TitleSlugDescriptionModel):
     width = models.PositiveIntegerField(
-        validators=[MinValueValidator(limit_value=1)]
+        blank=True, null=True, validators=[MinValueValidator(limit_value=1)]
     )
-    center = models.IntegerField()
+    center = models.IntegerField(blank=True, null=True)
+
+    lower_percentile = models.PositiveSmallIntegerField(
+        blank=True, null=True, validators=[MaxValueValidator(limit_value=100)]
+    )
+
+    upper_percentile = models.PositiveSmallIntegerField(
+        blank=True, null=True, validators=[MaxValueValidator(limit_value=100)]
+    )
+
+    def _validate_percentile(self):
+        if self.upper_percentile <= self.lower_percentile:
+            raise ValidationError(
+                f"Upper percentile ({self.upper_percentile}%) should be below the "
+                f"lower percentile ({self.lower_percentile}%)"
+            )
+
+    def _validate_fixed(self):
+        pass
+
+    def clean(self):
+        super().clean()
+        window_center_all = None not in {self.width, self.center}
+        window_center_none = all(v is None for v in {self.width, self.center})
+        percentile_all = None not in {
+            self.lower_percentile,
+            self.upper_percentile,
+        }
+        percentile_none = all(
+            v is None for v in {self.lower_percentile, self.upper_percentile}
+        )
+
+        if window_center_all and percentile_none:
+            self._validate_fixed()
+        elif percentile_all and window_center_none:
+            self._validate_percentile()
+        else:
+            raise ValidationError(
+                "Either (upper and lower percentiles) or (width and center) should be entered"
+            )
 
     class Meta(TitleSlugDescriptionModel.Meta):
         ordering = ("title",)
+        constraints = [
+            models.CheckConstraint(
+                name="%(app_label)s_%(class)s_either_fixed_or_percentile",
+                check=(
+                    models.Q(
+                        center__isnull=False,
+                        width__isnull=False,
+                        lower_percentile__isnull=True,
+                        upper_percentile__isnull=True,
+                    )
+                    | models.Q(
+                        center__isnull=True,
+                        width__isnull=True,
+                        lower_percentile__isnull=False,
+                        upper_percentile__isnull=False,
+                    )
+                ),
+            ),
+            models.CheckConstraint(
+                name="%(app_label)s_%(class)s_upper_gt_lower_percentile",
+                check=models.Q(
+                    upper_percentile__gt=models.F("lower_percentile")
+                ),
+            ),
+            models.CheckConstraint(
+                name="%(app_label)s_%(class)s_width_gt_0",
+                check=models.Q(width__gt=0) | models.Q(width__isnull=True),
+            ),
+        ]
 
     def __str__(self):
-        return f"{self.title} (center {self.center}, width {self.width})"
+        if None not in {self.center, self.width}:
+            return f"{self.title} (center {self.center}, width {self.width})"
+        else:
+            return f"{self.title} ({self.lower_percentile}%-{self.upper_percentile}%)"
 
 
 class LookUpTable(TitleSlugDescriptionModel):
+
     COLOR_INTERPOLATION_RGB = "RGB"
     COLOR_INTERPOLATION_HLS = "HLS"
     COLOR_INTERPOLATION_HLS_POS = "HLSpos"
@@ -318,6 +412,7 @@ class LookUpTable(TitleSlugDescriptionModel):
         return f"{self.title}"
 
     def clean(self):
+        super().clean()
         color_points = len(self.color.split(","))
         alpha_points = len(self.alpha.split(","))
         if color_points != alpha_points:

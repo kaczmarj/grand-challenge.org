@@ -1,38 +1,55 @@
 [build-system]
-requires = ["poetry>=0.12"]
-build-backend = "poetry.masonry.api"
+requires = ["poetry_core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
 
 [tool.black]
 line-length = 79
 target-version = ['py38']
 
+[tool.curlylint.rules]
+html_has_lang = 'en'
+django_forms_rendering = true
+image_alt = true
+# TODO: Enable this, would otherwise be a big change
+# indent = 4
+meta_viewport = true
+no_autofocus = true
+tabindex_no_positive = true
+
 [tool.poetry]
 name = "grand-challenge.org"
 version = "0.1.0"
-description = "A framework to objectively evaluate the performance of machine learning algorithms in biomedical imaging"
+description = "A platform for end-to-end development of machine learning solutions in biomedical imaging"
+license = "Apache-2.0"
 authors = ["James Meakin <code@jmsmkn.com>"]
+readme = "README.rst"
+homepage = "https://grand-challenge.org/"
+repository = "https://github.com/comic/grand-challenge.org/"
+documentation = "https://comic.github.io/grand-challenge.org/"
 packages = [
-    { include = "app" },
+    { include = "grandchallenge", from = "app" },
 ]
 
 [tool.poetry.dependencies]
 python = "^3.8"
 "beautifulsoup4" = "*"
-celery = {extras = ["redis", "sqs"], version = "^4.4.6"}
+# There is a bug with chords of groups in Celery 5.1, test with a
+# submission using algorithm_evaluation_fixtures to see if it is fixed
+celery = {extras = ["redis", "sqs"], version = "!=5.0.6,<5.1"}
+# Also pin kombu for Celery 5.1 due to https://github.com/celery/kombu/issues/1358
+# When upgrading kombu to 5.1 remove SQS patch in base container
+kombu = "<5.1"
 django = "<3.2"
 django-countries = "*"
 django-crispy-forms = "*"
-django-userena-ce = "*"
 djangorestframework = "*"
 docker = "*"
 "oauth2" = "*"
 python-magic = "*"
 pytz = "*"
-social-auth-app-django = "*"
 gunicorn = "*"
-uvicorn = "*"
+uvicorn = {version = "*", extras = ["standard"]}
 django-celery-email = "*"
-simpleitk = "*"
 "psycopg2" = "*"
 "django-select2" = "*"
 django-celery-results = "*"
@@ -40,10 +57,9 @@ django-summernote = "*"
 bleach = "*"
 jsonschema = "*"
 tldextract = "*"
-tifffile = "==2019.1.4"
 django-autocomplete-light = "*"
 django-storages = "*"
-boto3 = "*"
+boto3 = ">1.18.8"
 whitenoise = "*"
 brotli = "*"
 djangorestframework-guardian = "*"
@@ -51,29 +67,38 @@ django-extensions = "*"
 django-simple-history = "*"
 sentry-sdk = "*"
 django-cors-headers = "*"
-pyvips = "*"
-drf-yasg = {version = "*", extras = ["validation"]}
-pydicom = "*"
 scikit-learn = "*"
 pandas = "*"
-xlrd = "*"
 django-celery-beat = "!=1.6.0"
 django-guardian = "!=2.2.0"
 django-markdownx = "*"
 django-filter = "*"
 ua-parser = "*"
 djangorestframework-csv = "*"
-prometheus_client = "*"
-openslide-python = "*"
 humanize = "*"
 disposable-email-domains = "*"
-docutils = "<0.16" # Required for boto3 depedency resolution
 django-machina = "*"
-django-haystack = "3.0b1"
+django-haystack = "*"
 citeproc-py = "*"
 django-ipware = "*"
 pyswot = "*"
 django-redis = "*"
+django-allauth = "*"
+drf-spectacular = "*"
+jinja2 = "*"
+openpyxl = "*"
+requests = "*"
+django_rest_knox = "*"
+numpy = "*"
+Pillow = "*"
+panimg = "*"
+django-activity-stream = "*"
+django-stdimage = "*"
+django-permissions-policy = "*"
+aws-xray-sdk = "*"
+django-deprecate-fields = "*"
+django-add-default-value = "*"
+django-ses = "*"
 
 [tool.poetry.dev-dependencies]
 pytest-django = "*"
@@ -86,7 +111,9 @@ sphinx = "*"
 pyupgrade = "*"
 pytest-xdist = "*"
 sphinx-autodoc-typehints = "*"
-werkzeug = {extras = ["watchdog"], version = "^1.0.1"}
+werkzeug = {extras = ["watchdog"], version = "*"}
 sphinx-rtd-theme = "*"
 sphinxcontrib-plantuml = "*"
 pytest-randomly = "*"
+sphinxcontrib-django = "*"
+django-capture-on-commit-callbacks = "*"  # Backport from Django 3.2, can be removed

@@ -1,4 +1,4 @@
-{% extends "challenge.html" %}
+{% extends "pages/challenge_settings_base.html" %}
 {% load url %}
 {% load profiles %}
 
@@ -14,7 +14,6 @@
             <tr>
                 <th>Username</th>
                 <th>Name</th>
-                <th>Email</th>
                 <th>Institution</th>
                 <th>Department</th>
                 <th>Location</th>
@@ -33,9 +32,6 @@
                     </td>
                     <td>
                         {{ user.get_full_name }}
-                    </td>
-                    <td>
-                        {{ user.email }}
                     </td>
                     <td>
                         {{ user.user_profile.institution }}
@@ -70,7 +66,7 @@
             $('#usersTable').DataTable({
                 "pageLength": 10,
                 "columnDefs": [{
-                    "targets": [6],
+                    "targets": [-1],
                     "searchable": false,
                     "orderable": false
                 }]

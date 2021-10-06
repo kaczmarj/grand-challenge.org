@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.conf.urls import include
 from django.contrib import admin
+from django.contrib.auth.decorators import login_required
 from django.contrib.sitemaps.views import sitemap
 from django.template.response import TemplateResponse
 from django.urls import path
@@ -12,13 +13,14 @@ from grandchallenge.archives.sitemaps import ArchivesSitemap
 from grandchallenge.blogs.sitemaps import PostsSitemap
 from grandchallenge.challenges.sitemaps import ChallengesSitemap
 from grandchallenge.core.sitemaps import CoreSitemap, FlatPagesSitemap
-from grandchallenge.core.views import HomeTemplate
+from grandchallenge.core.views import AboutTemplate, HomeTemplate
 from grandchallenge.pages.sitemaps import PagesSitemap
 from grandchallenge.policies.sitemaps import PoliciesSitemap
 from grandchallenge.products.sitemaps import CompaniesSitemap, ProductsSitemap
 from grandchallenge.reader_studies.sitemaps import ReaderStudiesSiteMap
 
 admin.autodiscover()
+admin.site.login = login_required(admin.site.login)
 
 
 def handler500(request):
@@ -43,6 +45,7 @@ sitemaps = {
 
 urlpatterns = [
     path("", HomeTemplate.as_view(), name="home"),
+    path("about/", AboutTemplate.as_view(), name="about"),
     path(
         "robots.txt",
         TemplateView.as_view(
@@ -56,6 +59,7 @@ urlpatterns = [
         name="django.contrib.sitemaps.views.sitemap",
     ),
     path(settings.ADMIN_URL, admin.site.urls),
+    path("accounts/", include("allauth.urls")),
     path(
         "stats/",
         include("grandchallenge.statistics.urls", namespace="statistics"),
@@ -63,14 +67,24 @@ urlpatterns = [
     # Do not change the api namespace without updating the view names in
     # all of the serializers
     path("api/", include("grandchallenge.api.urls", namespace="api")),
+    path("github/", include("grandchallenge.github.urls", namespace="github")),
     path("users/", include("grandchallenge.profiles.urls")),
+    path(
+        "notifications/",
+        include(
+            "grandchallenge.notifications.urls", namespace="notifications"
+        ),
+    ),
+    path(
+        "settings/api-tokens/",
+        include("grandchallenge.api_tokens.urls", namespace="api-tokens"),
+    ),
     path(
         "verifications/",
         include(
             "grandchallenge.verifications.urls", namespace="verifications",
         ),
     ),
-    path("socialauth/", include("social_django.urls", namespace="social")),
     path(
         "challenges/",
         include("grandchallenge.challenges.urls", namespace="challenges"),
@@ -107,12 +121,6 @@ urlpatterns = [
         include("grandchallenge.retina_core.urls", namespace="retina"),
     ),
     path(
-        "registrations/",
-        include(
-            "grandchallenge.registrations.urls", namespace="registrations"
-        ),
-    ),
-    path(
         "aiforradiology/",
         include("grandchallenge.products.urls", namespace="products"),
     ),
@@ -132,6 +140,16 @@ urlpatterns = [
         ),
     ),
     path("forums/", include(machina_urls)),
+    path(
+        "publications/",
+        include("grandchallenge.publications.urls", namespace="publications"),
+    ),
+    path(
+        "documentation/",
+        include(
+            "grandchallenge.documentation.urls", namespace="documentation"
+        ),
+    ),
 ]
 
 if settings.DEBUG and settings.ENABLE_DEBUG_TOOLBAR:

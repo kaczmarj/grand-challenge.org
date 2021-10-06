@@ -1,46 +1,39 @@
 import logging
-from json import dumps
+from datetime import timedelta
 from urllib.parse import parse_qs, urljoin, urlparse
 
+from actstream.actions import follow, is_following
 from django.conf import settings
 from django.contrib.auth.models import Group
-from django.core.exceptions import ObjectDoesNotExist, ValidationError
-from django.core.files.uploadedfile import SimpleUploadedFile
-from django.core.validators import RegexValidator
+from django.core.exceptions import ValidationError
+from django.core.validators import (
+    MinValueValidator,
+    RegexValidator,
+)
 from django.db import models
+from django.db.transaction import on_commit
+from django.utils import timezone
 from django.utils.text import get_valid_filename
 from django_extensions.db.fields import AutoSlugField
 from guardian.shortcuts import assign_perm, remove_perm
 
 from grandchallenge.algorithms.models import AlgorithmImage
-from grandchallenge.algorithms.tasks import (
-    create_algorithm_jobs_for_evaluation,
-)
 from grandchallenge.archives.models import Archive
 from grandchallenge.challenges.models import Challenge
-from grandchallenge.components.backends.docker import (
-    Executor,
-    put_file,
-)
 from grandchallenge.components.models import (
     ComponentImage,
     ComponentInterface,
-    ComponentInterfaceValue,
     ComponentJob,
 )
 from grandchallenge.core.models import UUIDModel
 from grandchallenge.core.storage import protected_s3_storage, public_s3_storage
 from grandchallenge.core.validators import (
     ExtensionValidator,
-    JSONSchemaValidator,
+    JSONValidator,
     MimeTypeValidator,
-    get_file_mimetype,
 )
-from grandchallenge.evaluation.emails import (
-    send_failed_evaluation_email,
-    send_successful_evaluation_email,
-)
-from grandchallenge.evaluation.tasks import calculate_ranks
+from grandchallenge.evaluation.tasks import calculate_ranks, create_evaluation
+from grandchallenge.notifications.models import Notification, NotificationType
 from grandchallenge.subdomains.utils import reverse
 
 logger = logging.getLogger(__name__)
@@ -113,7 +106,7 @@ class Phase(UUIDModel):
     OFF = "off"
     OPTIONAL = "opt"
     REQUIRED = "req"
-    PUBLICATION_LINK_CHOICES = SUPPLEMENTARY_FILE_CHOICES = (
+    SUPPLEMENTARY_URL_CHOICES = SUPPLEMENTARY_FILE_CHOICES = (
         (OFF, "Off"),
         (OPTIONAL, "Optional"),
         (REQUIRED, "Required"),
@@ -149,7 +142,7 @@ class Phase(UUIDModel):
         ALGORITHM = 3, "Algorithm"
 
     challenge = models.ForeignKey(
-        Challenge, on_delete=models.CASCADE, editable=False,
+        Challenge, on_delete=models.PROTECT, editable=False,
     )
     archive = models.ForeignKey(
         Archive,
@@ -214,7 +207,7 @@ class Phase(UUIDModel):
             "A JSON object that contains the extra columns from metrics.json "
             "that will be displayed on the results page. "
         ),
-        validators=[JSONSchemaValidator(schema=EXTRA_RESULT_COLUMNS_SCHEMA)],
+        validators=[JSONValidator(schema=EXTRA_RESULT_COLUMNS_SCHEMA)],
     )
     scoring_method_choice = models.CharField(
         max_length=3,
@@ -293,28 +286,60 @@ class Phase(UUIDModel):
             "page."
         ),
     )
-    publication_url_choice = models.CharField(
+    supplementary_url_choice = models.CharField(
         max_length=3,
-        choices=PUBLICATION_LINK_CHOICES,
+        choices=SUPPLEMENTARY_URL_CHOICES,
         default=OFF,
         help_text=(
-            "Show a publication url field on the submission page so that "
+            "Show a supplementary url field on the submission page so that "
             "users can submit a link to a publication that corresponds to "
             "their submission. Off turns this feature off, Optional means "
             "that including the url is optional for the user, Required means "
             "that the user must provide an url."
         ),
     )
-    show_publication_url = models.BooleanField(
-        default=False,
-        help_text=("Show a link to the publication on the results page"),
+    supplementary_url_label = models.CharField(
+        max_length=32,
+        blank=True,
+        default="Publication",
+        help_text=(
+            "The label that will be used on the submission and results page "
+            "for the supplementary url. For example: Publication."
+        ),
     )
-    daily_submission_limit = models.PositiveIntegerField(
+    supplementary_url_help_text = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        help_text=(
+            "The help text to include on the submissions page to describe the "
+            'submissions url. Eg: "A link to your publication.".'
+        ),
+    )
+    show_supplementary_url = models.BooleanField(
+        default=False,
+        help_text=("Show a link to the supplementary url on the results page"),
+    )
+    submission_limit = models.PositiveIntegerField(
         default=10,
         help_text=(
             "The limit on the number of times that a user can make a "
-            "submission in a 24 hour period."
+            "submission over the submission limit period. "
+            "Set this to 0 to close submissions for this phase."
         ),
+    )
+    submission_limit_period = models.PositiveSmallIntegerField(
+        default=1,
+        null=True,
+        blank=True,
+        help_text=(
+            "The number of days to consider for the submission limit period. "
+            "If this is set to 1, then the submission limit is applied "
+            "over the previous day. If it is set to 365, then the submission "
+            "limit is applied over the previous year. If the value is not "
+            "set, then the limit is applied over all time."
+        ),
+        validators=[MinValueValidator(limit_value=1)],
     )
     submissions_open = models.DateTimeField(
         null=True,
@@ -380,6 +405,18 @@ class Phase(UUIDModel):
     outputs = models.ManyToManyField(
         to=ComponentInterface, related_name="evaluation_outputs"
     )
+    algorithm_inputs = models.ManyToManyField(
+        to=ComponentInterface,
+        related_name="+",
+        blank=True,
+        help_text="The input interfaces that the algorithms for this phase must use",
+    )
+    algorithm_outputs = models.ManyToManyField(
+        to=ComponentInterface,
+        related_name="+",
+        blank=True,
+        help_text="The output interfaces that the algorithms for this phase must use",
+    )
 
     class Meta:
         unique_together = (
@@ -387,7 +424,10 @@ class Phase(UUIDModel):
             ("challenge", "slug"),
         )
         ordering = ("challenge", "submissions_open", "created")
-        permissions = (("create_phase_submission", "Create Phase Submission"),)
+        permissions = (
+            ("create_phase_submission", "Create Phase Submission"),
+            ("create_phase_workspace", "Create Phase Workspace"),
+        )
 
     def __str__(self):
         return f"{self.title} Evaluation for {self.challenge.short_name}"
@@ -400,8 +440,18 @@ class Phase(UUIDModel):
         if adding:
             self.set_default_interfaces()
             self.assign_permissions()
+            for admin in self.challenge.get_admins():
+                if not is_following(admin, self):
+                    follow(
+                        user=admin,
+                        obj=self,
+                        actor_only=False,
+                        send_action=False,
+                    )
 
-        calculate_ranks.apply_async(kwargs={"phase_pk": self.pk})
+        on_commit(
+            lambda: calculate_ranks.apply_async(kwargs={"phase_pk": self.pk})
+        )
 
     def set_default_interfaces(self):
         self.inputs.set(
@@ -469,11 +519,73 @@ class Phase(UUIDModel):
         )
         return url
 
+    @property
+    def submission_limit_period_timedelta(self):
+        return timedelta(days=self.submission_limit_period)
+
+    def get_next_submission(self, *, user):
+        """
+        Determines the number of submissions left for the user,
+        and when they can next submit.
+        """
+        now = timezone.now()
+
+        filter_kwargs = {"creator": user}
+
+        if self.submission_limit_period is not None:
+            filter_kwargs.update(
+                {"created__gte": now - self.submission_limit_period_timedelta}
+            )
+
+        evals_in_period = (
+            self.submission_set.filter(**filter_kwargs)
+            .exclude(evaluation__status=Evaluation.FAILURE)
+            .distinct()
+            .order_by("-created")
+        )
+
+        remaining_submissions = max(
+            0, self.submission_limit - evals_in_period.count()
+        )
+
+        if remaining_submissions:
+            next_sub_at = now
+        elif (
+            self.submission_limit == 0 or self.submission_limit_period is None
+        ):
+            # User is never going to be able to submit again
+            next_sub_at = None
+        else:
+            next_sub_at = (
+                evals_in_period[self.submission_limit - 1].created
+                + self.submission_limit_period_timedelta
+            )
+
+        return {
+            "remaining_submissions": remaining_submissions,
+            "next_submission_at": next_sub_at,
+        }
+
+    def has_pending_evaluations(self, *, user):
+        return (
+            Evaluation.objects.filter(
+                submission__phase=self, submission__creator=user,
+            )
+            .exclude(
+                status__in=(
+                    Evaluation.SUCCESS,
+                    Evaluation.FAILURE,
+                    Evaluation.CANCELLED,
+                )
+            )
+            .exists()
+        )
+
 
 class Method(UUIDModel, ComponentImage):
     """Store the methods for performing an evaluation."""
 
-    phase = models.ForeignKey(Phase, on_delete=models.CASCADE, null=True)
+    phase = models.ForeignKey(Phase, on_delete=models.PROTECT, null=True)
 
     def save(self, *args, **kwargs):
         adding = self._state.adding
@@ -523,16 +635,12 @@ class Submission(UUIDModel):
     creator = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL
     )
-    creators_ip = models.GenericIPAddressField(
-        null=True, default=None, editable=False
-    )
-    creators_user_agent = models.TextField(
-        blank=True, default="", editable=False
-    )
-
-    phase = models.ForeignKey(Phase, on_delete=models.CASCADE, null=True)
+    phase = models.ForeignKey(Phase, on_delete=models.PROTECT, null=True)
     algorithm_image = models.ForeignKey(
         AlgorithmImage, null=True, on_delete=models.SET_NULL
+    )
+    staged_predictions_file_uuid = models.UUIDField(
+        blank=True, null=True, editable=False
     )
     predictions_file = models.FileField(
         upload_to=submission_file_path,
@@ -560,11 +668,8 @@ class Submission(UUIDModel):
             "submissions."
         ),
     )
-    publication_url = models.URLField(
-        blank=True,
-        help_text=(
-            "A URL for the publication associated with this submission."
-        ),
+    supplementary_url = models.URLField(
+        blank=True, help_text="A URL associated with this submission.",
     )
 
     class Meta:
@@ -576,50 +681,22 @@ class Submission(UUIDModel):
         super().save(*args, **kwargs)
 
         if adding:
-            self.create_evaluation()
             self.assign_permissions()
+            if not is_following(self.creator, self.phase):
+                follow(
+                    user=self.creator,
+                    obj=self.phase,
+                    actor_only=False,
+                    send_action=False,
+                )
+            e = create_evaluation.signature(
+                kwargs={"submission_pk": self.pk}, immutable=True,
+            )
+            on_commit(e.apply_async)
 
     def assign_permissions(self):
         assign_perm("view_submission", self.phase.challenge.admins_group, self)
         assign_perm("view_submission", self.creator, self)
-
-    def create_evaluation(self):
-        method = self.latest_ready_method
-
-        if not method:
-            # TODO Email admins
-            return
-
-        evaluation = Evaluation.objects.create(submission=self, method=method)
-
-        if self.algorithm_image:
-            create_algorithm_jobs_for_evaluation.apply_async(
-                kwargs={"evaluation_pk": evaluation.pk}
-            )
-        else:
-            mimetype = get_file_mimetype(self.predictions_file)
-
-            if mimetype == "application/zip":
-                interface = ComponentInterface.objects.get(
-                    slug="predictions-zip-file"
-                )
-            elif mimetype == "text/plain":
-                interface = ComponentInterface.objects.get(
-                    slug="predictions-csv-file"
-                )
-            else:
-                raise NotImplementedError(
-                    f"Interface is not defined for {mimetype} files"
-                )
-
-            evaluation.inputs.set(
-                [
-                    ComponentInterfaceValue.objects.create(
-                        interface=interface, file=self.predictions_file
-                    )
-                ]
-            )
-            evaluation.signature.apply_async()
 
     @property
     def latest_ready_method(self):
@@ -639,65 +716,20 @@ class Submission(UUIDModel):
         )
 
 
-class SubmissionEvaluator(Executor):
-    def _copy_input_files(self, writer):
-        for file in self._input_files:
-            dest_file = "/tmp/submission-src"
-            put_file(container=writer, src=file, dest=dest_file)
-
-            if hasattr(file, "content_type"):
-                mimetype = file.content_type
-            else:
-                with file.open("rb") as f:
-                    mimetype = get_file_mimetype(f)
-
-            if mimetype.lower() == "application/zip":
-                # Unzip the file in the container rather than in the python
-                # process. With resource limits this should provide some
-                # protection against zip bombs etc.
-                writer.exec_run(
-                    f"unzip {dest_file} -d /input/ -x '__MACOSX/*'"
-                )
-
-                # Remove a duplicated directory
-                input_files = (
-                    writer.exec_run("ls -1 /input/")
-                    .output.decode()
-                    .splitlines()
-                )
-
-                if (
-                    len(input_files) == 1
-                    and not writer.exec_run(
-                        f"ls -d /input/{input_files[0]}/"
-                    ).exit_code
-                ):
-                    writer.exec_run(
-                        f'/bin/sh -c "mv /input/{input_files[0]}/* /input/ '
-                        f'&& rm -r /input/{input_files[0]}/"'
-                    )
-
-            elif mimetype.lower() == "application/json":
-                writer.exec_run(f"mv {dest_file} /input/predictions.json")
-
-            else:
-                # Not a zip file, so must be a csv
-                writer.exec_run(f"mv {dest_file} /input/submission.csv")
-
-
 class Evaluation(UUIDModel, ComponentJob):
     """Stores information about a evaluation for a given submission."""
 
-    submission = models.ForeignKey("Submission", on_delete=models.CASCADE)
-    method = models.ForeignKey("Method", on_delete=models.CASCADE)
+    submission = models.ForeignKey("Submission", on_delete=models.PROTECT)
+    method = models.ForeignKey("Method", on_delete=models.PROTECT)
 
-    published = models.BooleanField(default=True)
+    published = models.BooleanField(default=True, db_index=True)
     rank = models.PositiveIntegerField(
         default=0,
         help_text=(
             "The position of this result on the leaderboard. If the value is "
             "zero, then the result is unranked."
         ),
+        db_index=True,
     )
     rank_score = models.FloatField(default=0.0)
     rank_per_metric = models.JSONField(default=dict)
@@ -712,8 +744,10 @@ class Evaluation(UUIDModel, ComponentJob):
 
         self.assign_permissions()
 
-        calculate_ranks.apply_async(
-            kwargs={"phase_pk": self.submission.phase.pk}
+        on_commit(
+            lambda: calculate_ranks.apply_async(
+                kwargs={"phase_pk": self.submission.phase.pk}
+            )
         )
 
     @property
@@ -751,29 +785,8 @@ class Evaluation(UUIDModel, ComponentJob):
         return self.method
 
     @property
-    def input_files(self):
-        try:
-            return [
-                SimpleUploadedFile(
-                    "predictions.json",
-                    dumps(
-                        self.inputs.get(
-                            interface__title="Predictions JSON File"
-                        ).value
-                    ).encode("utf-8"),
-                    content_type="application/json",
-                )
-            ]
-        except ObjectDoesNotExist:
-            return [inpt.file for inpt in self.inputs.all()]
-
-    @property
     def output_interfaces(self):
         return self.submission.phase.outputs
-
-    @property
-    def executor_cls(self):
-        return SubmissionEvaluator
 
     def clean(self):
         if self.submission.phase != self.method.phase:
@@ -790,10 +803,22 @@ class Evaluation(UUIDModel, ComponentJob):
         res = super().update_status(*args, **kwargs)
 
         if self.status == self.FAILURE:
-            send_failed_evaluation_email(self)
+            Notification.send(
+                type=NotificationType.NotificationTypeChoices.EVALUATION_STATUS,
+                actor=self.submission.creator,
+                message="failed",
+                action_object=self,
+                target=self.submission.phase,
+            )
 
         if self.status == self.SUCCESS:
-            send_successful_evaluation_email(self)
+            Notification.send(
+                type=NotificationType.NotificationTypeChoices.EVALUATION_STATUS,
+                actor=self.submission.creator,
+                message="succeeded",
+                action_object=self,
+                target=self.submission.phase,
+            )
 
         return res
 

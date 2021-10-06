@@ -1,5 +1,6 @@
 from django.contrib import admin
 from django.utils.timezone import now
+from pyswot import is_academic
 
 from grandchallenge.verifications.models import Verification
 
@@ -21,17 +22,19 @@ mark_not_verified.allowed_permissions = ("change",)
 
 
 class VerificationAdmin(admin.ModelAdmin):
-    list_select_related = ("user__userena_signup",)
     list_display = (
         "user",
+        "user_info",
         "created",
         "signup_email",
-        "signup_email_activated",
+        "signup_email_is_academic",
         "email",
+        "email_is_academic",
         "email_is_verified",
         "is_verified",
         "verified_at",
     )
+    list_select_related = ("user__user_profile",)
     list_filter = ("email_is_verified", "is_verified")
     readonly_fields = (
         "created",
@@ -45,10 +48,15 @@ class VerificationAdmin(admin.ModelAdmin):
     actions = (mark_verified, mark_not_verified)
     autocomplete_fields = ("user",)
 
-    def signup_email_activated(self, instance):
-        return instance.signup_email_activated
+    def email_is_academic(self, instance):
+        return is_academic(email=instance.email)
 
-    signup_email_activated.boolean = True
+    email_is_academic.boolean = True
+
+    def signup_email_is_academic(self, instance):
+        return is_academic(email=instance.signup_email)
+
+    signup_email_is_academic.boolean = True
 
     def get_readonly_fields(self, request, obj=None):
         if obj:

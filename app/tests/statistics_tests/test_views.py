@@ -1,5 +1,4 @@
 import pytest
-from prometheus_client import CONTENT_TYPE_LATEST
 
 from tests.factories import UserFactory
 from tests.utils import get_view_for_user
@@ -15,23 +14,6 @@ def test_get_statistics(client):
 
     response = get_view_for_user(client=client, viewname="statistics:detail")
     assert response.status_code == 200
-    assert f"[&quot;NL&quot;, {n_dutch}]" in response.rendered_content
-
-
-@pytest.mark.django_db
-def test_prometheus_metrics(client):
-    user = UserFactory()
-
-    response = get_view_for_user(
-        client=client, viewname="api:metrics", user=user
-    )
-    assert response.status_code == 403
-
-    user.is_staff = True
-    user.save()
-
-    response = get_view_for_user(
-        client=client, viewname="api:metrics", user=user
-    )
-    assert response.status_code == 200
-    assert response.content_type == CONTENT_TYPE_LATEST
+    # String country IDs are used in the topojson file we download
+    # 528 is the ISO ID for the Netherlands
+    assert '{"id": "528", "participants": 3}' in response.rendered_content

@@ -8,171 +8,29 @@ import pytest
 from PIL import Image as PILImage
 from django.conf import settings
 from django.core.cache import cache
+from knox.models import AuthToken
 from rest_framework import status
-from rest_framework.authtoken.models import Token
 from rest_framework.compat import LONG_SEPARATORS, SHORT_SEPARATORS
 from rest_framework.settings import api_settings
 from rest_framework.utils import encoders
 
-from grandchallenge.retina_api.models import ArchiveDataModel
+from grandchallenge.cases.models import ImageFile
 from grandchallenge.retina_api.serializers import (
     TreeImageSerializer,
     TreeObjectSerializer,
 )
-from grandchallenge.retina_api.tasks import cache_archive_data
 from grandchallenge.subdomains.utils import reverse
 from tests.cases_tests.factories import (
     ImageFactoryWithImageFile,
+    ImageFactoryWithImageFile16Bit,
     ImageFactoryWithImageFile2DLarge,
     ImageFactoryWithImageFile3DLarge3Slices,
     ImageFactoryWithImageFile3DLarge4Slices,
 )
 from tests.retina_api_tests.helpers import (
-    batch_test_data_endpoints,
-    batch_test_image_endpoint_redirects,
     client_force_login,
-    client_login,
-    create_datastructures_data,
     get_user_from_str,
 )
-
-
-@pytest.mark.django_db
-class TestArchiveIndexAPIEndpoints:
-    def test_archive_view_non_auth(self, client):
-        # Clear cache manually (this is not done by pytest-django for some reason...)
-        cache.clear()
-        url = reverse("retina:api:archives-api-view")
-        response = client.get(url, HTTP_ACCEPT="application/json")
-        assert response.status_code == status.HTTP_403_FORBIDDEN
-
-    def test_archive_view_normal_non_auth(self, client):
-        # Create data
-        create_datastructures_data()
-
-        # login client
-        client, _ = client_login(client, user="normal")
-
-        url = reverse("retina:api:archives-api-view")
-        response = client.get(url, HTTP_ACCEPT="application/json")
-        assert response.status_code == status.HTTP_403_FORBIDDEN
-
-    def test_archive_view_retina_auth(self, client):
-        # Create data
-        create_datastructures_data()
-
-        # login client
-        client, _ = client_login(client, user="retina_user")
-
-        url = reverse("retina:api:archives-api-view")
-        response = client.get(url, HTTP_ACCEPT="application/json")
-        assert response.status_code == status.HTTP_200_OK
-
-    def test_archive_view_returns_correct_error_on_empty_cache(
-        self, client, monkeypatch
-    ):
-        # Clear cache manually
-        cache.clear()
-
-        # Mock celery task
-        is_called = False
-
-        def call_task():
-            nonlocal is_called
-            is_called = True
-
-        monkeypatch.setattr(cache_archive_data, "delay", call_task)
-
-        # login client
-        client, _ = client_login(client, user="retina_user")
-
-        url = reverse("retina:api:archives-api-view")
-        response = client.get(url, HTTP_ACCEPT="application/json")
-        response_data = json.loads(response.content)
-        # check if correct error is sent
-        assert response_data == {
-            "error": [
-                1,
-                "Archive data task triggered. Try again in 2 minutes.",
-            ]
-        }
-        assert is_called
-
-    def test_archive_view_returns_correct_data_from_cache(self, client):
-        # Clear cache manually
-        cache.clear()
-        # Set cached data
-        test_data = {"test": "data", "object": 1}
-        ArchiveDataModel.objects.update_or_create(
-            pk=1, defaults={"value": test_data},
-        )
-
-        # login client
-        client, _ = client_login(client, user="retina_user")
-
-        url = reverse("retina:api:archives-api-view")
-        response = client.get(url, HTTP_ACCEPT="application/json")
-        response_data = json.loads(response.content)
-        # check if correct data is sent
-        assert response_data == test_data
-
-
-@pytest.mark.django_db
-class TestImageAPIEndpoint:
-    # test methods are added dynamically
-    pass
-
-
-batch_test_image_endpoint_redirects(TestImageAPIEndpoint)
-
-
-@pytest.mark.django_db
-class TestDataAPIEndpoint:
-    # test methods are added dynamically
-    pass
-
-
-batch_test_data_endpoints(TestDataAPIEndpoint)
-
-
-@pytest.mark.django_db
-class TestImageElementSpacingView:
-    @pytest.mark.parametrize(
-        "user", ["anonymous", "normal", "staff", "retina_user"]
-    )
-    def test_no_access(self, client, user):
-        image = ImageFactoryWithImageFile()
-        url = reverse("retina:api:image-element-spacing-view", args=[image.pk])
-        client, _ = client_login(client, user=user)
-        response = client.get(url)
-        assert response.status_code == status.HTTP_403_FORBIDDEN
-
-    @pytest.mark.parametrize(
-        "user,expected_status",
-        [
-            ("anonymous", status.HTTP_403_FORBIDDEN),
-            ("normal", status.HTTP_403_FORBIDDEN),
-            ("staff", status.HTTP_403_FORBIDDEN),
-            ("retina_user", status.HTTP_200_OK),
-        ],
-    )
-    def test_access(self, client, user, expected_status):
-        image = ImageFactoryWithImageFile()
-        image.permit_viewing_by_retina_users()
-        url = reverse("retina:api:image-element-spacing-view", args=[image.pk])
-        client, _ = client_login(client, user=user)
-        response = client.get(url)
-        assert response.status_code == expected_status
-
-    def test_returns_correct_spacing(self, client):
-        image = ImageFactoryWithImageFile()
-        image.permit_viewing_by_retina_users()
-        url = reverse("retina:api:image-element-spacing-view", args=[image.pk])
-        client, _ = client_login(client, user="retina_user")
-        response = client.get(url)
-        assert response.status_code == status.HTTP_200_OK
-        r = response.json()
-        assert list(image.get_sitk_image().GetSpacing()) == r
 
 
 @pytest.mark.django_db
@@ -186,8 +44,8 @@ class TestArchiveAPIView:
         user_model = get_user_from_str(user)
         kwargs = {}
         if user_model is not None and not isinstance(user_model, str):
-            token_object, _ = Token.objects.get_or_create(user=user_model)
-            kwargs.update({"HTTP_AUTHORIZATION": f"Token {token_object.key}"})
+            _, token = AuthToken.objects.create(user=user_model)
+            kwargs.update({"HTTP_AUTHORIZATION": f"Bearer {token}"})
         return client.get(url, **kwargs)
 
     @staticmethod
@@ -197,8 +55,8 @@ class TestArchiveAPIView:
             args=[pk] if pk is not None else [],
         )
         kwargs = {}
-        token_object, _ = Token.objects.get_or_create(user=user)
-        kwargs.update({"HTTP_AUTHORIZATION": f"Token {token_object.key}"})
+        _, token = AuthToken.objects.create(user=user)
+        kwargs.update({"HTTP_AUTHORIZATION": f"Bearer {token}"})
         return client.get(url, **kwargs)
 
     @staticmethod
@@ -287,20 +145,48 @@ class TestArchiveAPIView:
             assert response.status_code == status.HTTP_200_OK
             assert response.content == b'{"directories":[],"images":[]}'
 
-    def test_caching(self, client, archive_patient_study_image_set):
-        # Clear cache manually
+    def test_only_load_metaio_images(
+        self, client, archive_patient_study_image_set
+    ):
         cache.clear()
-        # Perform normal request
-        response = self.perform_request(client, "retina_user")
+        user = get_user_from_str("retina_user")
+        archive_patient_study_image_set.archive1.add_user(user)
+        pk = archive_patient_study_image_set.study113.pk
+
+        for (index, image) in enumerate(
+            archive_patient_study_image_set.images111
+        ):
+            if index % 2 == 0:
+                continue
+            for image_file in image.files.all():
+                image_file.image_type = ImageFile.IMAGE_TYPE_DZI
+                image_file.save()
+
+        response = self.perform_request_as_user(client, user, pk)
         assert response.status_code == status.HTTP_200_OK
-        json_response = response.content.decode()
-        # Remove data
-        archive_patient_study_image_set.archive1.delete()
-        archive_patient_study_image_set.archive2.delete()
-        # Perform request again and expect unchanged response
-        response = self.perform_request(client, "retina_user")
-        assert response.status_code == status.HTTP_200_OK
-        assert response.content.decode() == json_response
+        result = json.loads(response.content)
+        assert len(result["images"]) == len(
+            archive_patient_study_image_set.images113
+        )
+        res_img_ids = {i["id"] for i in result["images"]}
+        exp_img_ids = {
+            str(i.pk) for i in archive_patient_study_image_set.images113
+        }
+        assert res_img_ids == exp_img_ids
+
+    def test_number_of_queries(
+        self,
+        client,
+        archive_patient_study_image_set,
+        django_assert_max_num_queries,
+    ):
+        cache.clear()
+        user = get_user_from_str("retina_user")
+        archive_patient_study_image_set.archive1.add_user(user)
+        pk = archive_patient_study_image_set.study113.pk
+
+        with django_assert_max_num_queries(22):
+            self.perform_request_as_user(client, user, pk)
 
 
 @pytest.mark.django_db
@@ -321,8 +207,8 @@ class TestBase64ThumbnailView:
         user_model = get_user_from_str(user)
         kwargs = {}
         if user_model is not None and not isinstance(user_model, str):
-            token_object, _ = Token.objects.get_or_create(user=user_model)
-            kwargs.update({"HTTP_AUTHORIZATION": f"Token {token_object.key}"})
+            _, token = AuthToken.objects.create(user=user_model)
+            kwargs.update({"HTTP_AUTHORIZATION": f"Bearer {token}"})
         response = client.get(url, **kwargs)
         assert response.status_code == expected_status
 
@@ -334,7 +220,8 @@ class TestBase64ThumbnailView:
             kwargs.update({"width": max_dimension, "height": max_dimension})
         url = reverse("retina:api:image-thumbnail", kwargs=kwargs)
         client, user_model = client_force_login(client, user="retina_user")
-        token = f"Token {Token.objects.create(user=user_model).key}"
+        _, token = AuthToken.objects.create(user=user_model)
+        token = f"Bearer {token}"
         response = client.get(url, HTTP_AUTHORIZATION=token)
         return response
 
@@ -364,9 +251,9 @@ class TestBase64ThumbnailView:
         image_base64_str = self.get_b64_from_image(image, max_dimension, is_3d)
 
         returned_img = PILImage.open(
-            BytesIO(base64.b64decode(response.content))
+            BytesIO(base64.b64decode(response.json()["content"]))
         )
-        assert response.content == image_base64_str
+        assert response.json()["content"] == image_base64_str.decode()
         width, height = returned_img.size
         assert max(width, height) == max_dimension
 
@@ -387,4 +274,13 @@ class TestBase64ThumbnailView:
             max_dimension = settings.RETINA_DEFAULT_THUMBNAIL_SIZE
         self.do_test_thumbnail_creation(
             client, max_dimension, image, is_3d=is_3d
+        )
+
+    def test_16bit_image(self, client):
+        image = ImageFactoryWithImageFile16Bit()
+        self.do_test_thumbnail_creation(
+            client,
+            max_dimension=settings.RETINA_DEFAULT_THUMBNAIL_SIZE,
+            image=image,
+            is_3d=True,
         )

@@ -1,3 +1,5 @@
+"""Settings overrides for tests"""
+
 import logging
 import os
 
@@ -7,9 +9,13 @@ os.environ["PROTECTED_S3_CUSTOM_DOMAIN"] = "testserver/media"
 # noinspection PyUnresolvedReferences
 from config.settings import *  # noqa: F401, F403, E402
 
-""" Settings overrides for tests """
+SESSION_COOKIE_DOMAIN = ".testserver"
+ALLOWED_HOSTS = [SESSION_COOKIE_DOMAIN]
 
-ALLOWED_HOSTS = [".testserver"]
+# Speed up token generation in tests
+REST_KNOX[  # noqa F405
+    "SECURE_HASH_ALGORITHM"
+] = "cryptography.hazmat.primitives.hashes.MD5"
 
 WHITENOISE_AUTOREFRESH = True
 STATICFILES_STORAGE = "django.contrib.staticfiles.storage.StaticFilesStorage"
@@ -20,6 +26,11 @@ EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
 
 CELERY_BROKER = "memory"
 CELERY_BROKER_URL = "memory://"
+
+# Disable image resizing
+STDIMAGE_LOGO_VARIATIONS = {"x20": (None,)}
+STDIMAGE_SOCIAL_VARIATIONS = {"x20": (None,)}
+STDIMAGE_BANNER_VARIATIONS = {}
 
 # Disable debugging in tests
 DEBUG = False

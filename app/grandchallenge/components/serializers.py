@@ -1,15 +1,18 @@
 from rest_framework import serializers
+from rest_framework.fields import SerializerMethodField
+from rest_framework.relations import SlugRelatedField
 
-from grandchallenge.api.swagger import swagger_schema_fields_for_charfield
-from grandchallenge.cases.models import Image
+from grandchallenge.cases.models import Image, RawImageUploadSession
 from grandchallenge.components.models import (
     ComponentInterface,
     ComponentInterfaceValue,
+    InterfaceKind,
 )
 
 
-class ComponentInterfaceSerialzer(serializers.ModelSerializer):
+class ComponentInterfaceSerializer(serializers.ModelSerializer):
     kind = serializers.CharField(source="get_kind_display", read_only=True)
+    super_kind = SerializerMethodField()
 
     class Meta:
         model = ComponentInterface
@@ -19,10 +22,13 @@ class ComponentInterfaceSerialzer(serializers.ModelSerializer):
             "slug",
             "kind",
             "pk",
+            "default_value",
+            "super_kind",
+            "relative_path",
         ]
-        swagger_schema_fields = swagger_schema_fields_for_charfield(
-            kind=model._meta.get_field("kind")
-        )
+
+    def get_super_kind(self, obj: ComponentInterface) -> str:
+        return obj.super_kind.label
 
 
 class SimpleImageSerializer(serializers.ModelSerializer):
@@ -30,16 +36,30 @@ class SimpleImageSerializer(serializers.ModelSerializer):
     # name is needed
     class Meta:
         model = Image
-        fields = (
-            "pk",
-            "name",
-        )
+        fields = ("pk", "name")
 
 
-class ComponentInterfaceValueSerializer(serializers.ModelSerializer):
-    # Serializes images in place rather than with hyperlinks for internal usage
-    image = SimpleImageSerializer()
-    interface = ComponentInterfaceSerialzer()
+class ComponentInterfaceValuePostSerializer(serializers.ModelSerializer):
+    """
+    Serializes images with hyperlinks for external usage
+    Expects interface_slug, to allow creating a ComponentInterfaceValue with an
+    existing ComponentInterface
+    """
+
+    image = serializers.HyperlinkedRelatedField(
+        queryset=Image.objects.all(),
+        view_name="api:image-detail",
+        required=False,
+    )
+    interface = SlugRelatedField(
+        slug_field="slug", queryset=ComponentInterface.objects.all()
+    )
+    upload_session = serializers.HyperlinkedRelatedField(
+        queryset=RawImageUploadSession.objects.all(),
+        view_name="api:upload-session-detail",
+        required=False,
+        write_only=True,
+    )
 
     class Meta:
         model = ComponentInterfaceValue
@@ -49,7 +69,67 @@ class ComponentInterfaceValueSerializer(serializers.ModelSerializer):
             "file",
             "image",
             "pk",
+            "upload_session",
         ]
+
+    def validate(self, attrs):
+        interface = attrs["interface"]
+
+        if interface.kind in InterfaceKind.interface_type_image():
+            if not attrs.get("image") and not attrs.get("upload_session"):
+                raise serializers.ValidationError(
+                    f"upload_session or image are required for interface "
+                    f"kind {interface.kind}"
+                )
+
+            if attrs.get("image") and attrs.get("upload_session"):
+                raise serializers.ValidationError(
+                    "Only one of image or upload_session should be set"
+                )
+
+        if not attrs.get("upload_session"):
+            # Instances without an image are never valid, this will be checked
+            # later, but for now check everything else. DRF 3.0 dropped calling
+            # full_clean on instances, so we need to do it ourselves.
+            instance = ComponentInterfaceValue(
+                **{k: v for k, v in attrs.items() if k != "upload_session"}
+            )
+            instance.full_clean()
+
+        return attrs
+
+    def validate_upload_session(self, value):
+        user = self.context.get("user")
+
+        if not user.has_perm("view_rawimageuploadsession", value):
+            raise serializers.ValidationError(
+                f"User does not have permission to use {value}"
+            )
+
+        if value.status is not RawImageUploadSession.PENDING:
+            raise serializers.ValidationError(
+                f"{value} is not ready to be used"
+            )
+        return value
+
+    def validate_image(self, value):
+        user = self.context.get("user")
+
+        if not user.has_perm("view_image", value):
+            raise serializers.ValidationError(
+                f"User does not have permission to use {value}"
+            )
+        return value
+
+
+class ComponentInterfaceValueSerializer(serializers.ModelSerializer):
+    # Serializes images in place rather than with hyperlinks for internal usage
+    image = SimpleImageSerializer(required=False)
+    interface = ComponentInterfaceSerializer()
+
+    class Meta:
+        model = ComponentInterfaceValue
+        fields = ["interface", "value", "file", "image", "pk"]
 
 
 class HyperlinkedComponentInterfaceValueSerializer(
@@ -57,5 +137,5 @@ class HyperlinkedComponentInterfaceValueSerializer(
 ):
     # Serializes images with hyperlinks for external usage
     image = serializers.HyperlinkedRelatedField(
-        queryset=Image.objects.all(), view_name="api:image-detail",
+        queryset=Image.objects.all(), view_name="api:image-detail"
     )

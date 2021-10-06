@@ -1,70 +1,44 @@
 import pytest
-from django.conf import settings
-from guardian.shortcuts import assign_perm
+from allauth.account.models import EmailAddress
 from rest_framework import status
 from rest_framework.test import force_authenticate
 
 from grandchallenge.profiles.views import UserProfileViewSet
 from grandchallenge.subdomains.utils import reverse
 from tests.factories import PolicyFactory, UserFactory
-
-
-@pytest.mark.django_db
-class TestLoginRedirect:
-    def test_default_redirect(self, client):
-        url = reverse("login_redirect")
-        response = client.get(url, follow=True)
-        assert response.redirect_chain[0][1] == status.HTTP_302_FOUND
-        assert response.redirect_chain[0][0] == reverse("home")
-        assert response.status_code == status.HTTP_200_OK
-
-    def test_normal_redirect(self, client):
-        redirect_to = "/challenges/"
-        url = reverse("login_redirect") + f"?next={redirect_to}"
-        response = client.get(url, follow=True)
-        assert response.redirect_chain[0][1] == status.HTTP_302_FOUND
-        assert response.redirect_chain[0][0] == redirect_to
-        assert response.status_code == status.HTTP_200_OK
-
-    def test_redirect_to_logout_url(self, client):
-        url = reverse("login_redirect") + f"?next={settings.LOGOUT_URL}"
-        response = client.get(url, follow=True)
-        assert response.redirect_chain[0][1] == status.HTTP_302_FOUND
-        assert response.redirect_chain[0][0] == reverse("home")
-        assert response.status_code == status.HTTP_200_OK
-
-    def test_redirect_to_logout_url_absolute(self, client):
-        url = (
-            reverse("login_redirect")
-            + f"?next={reverse('home')}{settings.LOGOUT_URL[1:]}"
-        )
-        response = client.get(url, follow=True)
-        assert response.redirect_chain[0][1] == status.HTTP_302_FOUND
-        assert response.redirect_chain[0][0] == reverse("home")
-        assert response.status_code == status.HTTP_200_OK
+from tests.organizations_tests.factories import OrganizationFactory
+from tests.utils import get_view_for_user
 
 
 @pytest.mark.django_db
 class TestSignInRedirect:
     def get_redirect_response(self, client, next=None):
         password = "password"
+
         self.user = UserFactory()
         self.user.set_password(password)
         self.user.save()
-        url = reverse("userena_signin")
+
+        EmailAddress.objects.create(
+            user=self.user, email=self.user.email, verified=True
+        )
+
+        url = reverse("account_login")
         if next:
             url += f"?next={next}"
 
         return client.post(
             url,
-            data={"identification": self.user.username, "password": password},
+            data={"login": self.user.username, "password": password},
             follow=True,
         )
 
     def test_default_redirect(self, client):
         response = self.get_redirect_response(client)
         assert response.redirect_chain[0][1] == status.HTTP_302_FOUND
-        assert response.redirect_chain[0][0] == reverse("profile_redirect")
+        assert reverse("profile-detail-redirect").endswith(
+            response.redirect_chain[0][0]
+        )
         assert response.status_code == status.HTTP_200_OK
 
     def test_redirect(self, client):
@@ -74,18 +48,12 @@ class TestSignInRedirect:
         assert response.status_code == status.HTTP_200_OK
         assert response.redirect_chain[0][0] == expected_url
 
-    def test_no_logout_redirect(self, client):
-        response = self.get_redirect_response(client, settings.LOGOUT_URL)
-        assert response.redirect_chain[0][1] == status.HTTP_302_FOUND
-        assert response.redirect_chain[0][0] == reverse("profile_redirect")
-        assert response.status_code == status.HTTP_200_OK
-
 
 @pytest.mark.django_db
 class TestUrlEncodedUsername:
     def test_special_username(self, client):
         user = UserFactory(username="tést")
-        url = reverse("profile_redirect")
+        url = reverse("profile-detail-redirect")
         client.force_login(user)
         response = client.get(url, follow=True)
         assert response.status_code == status.HTTP_200_OK
@@ -95,10 +63,7 @@ class TestUrlEncodedUsername:
 @pytest.mark.django_db
 def test_terms_form_fields(client):
     p = PolicyFactory(title="terms", body="blah")
-    response = client.get(reverse("profile_signup"))
-    assert response.status_code == 200
-    assert p.get_absolute_url() in response.rendered_content
-    response = client.get(reverse("pre-social"))
+    response = client.get(reverse("account_signup"))
     assert response.status_code == 200
     assert p.get_absolute_url() in response.rendered_content
 
@@ -109,89 +74,110 @@ class TestProfileViewSets:
         UserFactory()
         url = reverse("api:profiles-user-self")
         request = rf.get(url)
-        response = UserProfileViewSet.as_view(actions={"get": "list"})(request)
-        assert response.status_code == 401
+        response = UserProfileViewSet.as_view(actions={"get": "self"})(request)
+        assert response.status_code == 200
+        assert response.data["user"] == {"username": "AnonymousUser"}
 
-    @pytest.mark.parametrize(
-        "permission", (True, False),
-    )
-    def test_profile_self(self, rf, permission):
+    def test_profile_self(self, rf):
         user = UserFactory()
         url = reverse("api:profiles-user-self")
         request = rf.get(url)
         force_authenticate(request, user=user)
-        if permission:
-            assign_perm("view_profile", user, user.user_profile)
         response = UserProfileViewSet.as_view(actions={"get": "self"})(request)
-        if permission:
-            assert response.status_code == 200
-            assert response.data["user"] == {
-                "username": user.username
-            }  # no user id
-            for field in (
-                "mugshot",
-                "privacy",
-                "institution",
-                "department",
-                "location",
-                "website",
-            ):
-                assert field in response.data
-            assert "country" not in response.data
-        else:
-            assert response.status_code == 403
+        assert response.status_code == 200
+        assert response.data["user"] == {
+            "username": user.username
+        }  # no user id
+        for field in (
+            "mugshot",
+            "institution",
+            "department",
+            "location",
+            "website",
+        ):
+            assert field in response.data
+        assert "country" not in response.data
+        assert user.user_profile.display_organizations
 
-    @pytest.mark.parametrize(
-        "user_kwargs,permission, expected_count",
-        (
-            (None, False, 0),
-            ({}, False, 0),
-            ({"is_staff": True}, False, 0),
-            ({"is_superuser": True}, False, 5),
-            (None, True, 0),
-            ({}, True, 1),
-            ({"is_staff": True}, True, 1),
-            ({"is_superuser": True}, True, 5),
-        ),
-    )
-    def test_profiles_list_permissions(
-        self, rf, user_kwargs, permission, expected_count
-    ):
-        user = None
-        if user_kwargs is not None:
-            user = UserFactory(**user_kwargs)
-        UserFactory()
-        UserFactory()
-        url = reverse("api:profiles-user-list")
-        request = rf.get(url)
-        if user is not None:
-            force_authenticate(request, user=user)
+    def test_organization_display(self, client):
+        u1 = UserFactory()
+        u2 = UserFactory()
+        org1 = OrganizationFactory()
+        org2 = OrganizationFactory()
+        org1.add_member(u1)
 
-        if user is not None and permission:
-            assign_perm("view_profile", user, user.user_profile)
-        response = UserProfileViewSet.as_view(actions={"get": "list"})(request)
-        if user:
-            assert response.status_code == 200
-            assert response.data["count"] == expected_count
-        else:
-            assert response.status_code == 401
+        assert org1.is_member(u1)
+        assert not org2.is_member(u1)
+        assert not org1.is_member(u2)
+        assert not org2.is_member(u2)
 
-    @pytest.mark.parametrize(
-        "permission", (True, False),
-    )
-    def test_profiles_retrieve_permissions(self, rf, permission):
-        user = UserFactory()
-        kwargs = {"pk": user.user_profile.pk}
-        url = reverse("api:profiles-user-detail", kwargs=kwargs)
-        request = rf.get(url)
-        force_authenticate(request, user=user)
-        if permission:
-            assign_perm("view_profile", user, user.user_profile)
-        response = UserProfileViewSet.as_view(actions={"get": "retrieve"})(
-            request, **kwargs
+        response = get_view_for_user(
+            viewname="profile-detail",
+            client=client,
+            user=u1,
+            reverse_kwargs={"username": u1.username},
         )
-        if permission:
-            assert response.status_code == 200
-            assert response.data["user"]["username"] == user.username
-        else:
-            assert response.status_code == 404
+        assert len(response.context[-1]["organizations"]) == 1
+        assert org1.title in response.content.decode()
+        assert org2.title not in response.content.decode()
+
+        response = get_view_for_user(
+            viewname="profile-detail",
+            client=client,
+            user=u2,
+            reverse_kwargs={"username": u2.username},
+        )
+        assert len(response.context[-1]["organizations"]) == 0
+        assert "Organizations" not in response.content.decode()
+        u1.user_profile.display_organizations = False
+        u1.user_profile.save()
+
+        response = get_view_for_user(
+            viewname="profile-detail",
+            client=client,
+            user=u1,
+            reverse_kwargs={"username": u1.username},
+        )
+
+        assert org1.title not in response.content.decode()
+
+    def test_organization_update(self, client):
+        u1 = UserFactory()
+        org1 = OrganizationFactory()
+        org1.add_member(u1)
+
+        response = get_view_for_user(
+            viewname="profile-detail",
+            client=client,
+            user=u1,
+            reverse_kwargs={"username": u1.username},
+        )
+
+        assert org1.title in response.content.decode()
+
+        _ = get_view_for_user(
+            viewname="profile-update",
+            client=client,
+            method=client.post,
+            user=u1,
+            reverse_kwargs={"username": u1.username},
+            data={
+                "first_name": "Firstname",
+                "last_name": "Lastname",
+                "institution": "Institution",
+                "department": "Department",
+                "country": "NL",
+                "display_organizations": False,
+            },
+        )
+
+        u1.user_profile.refresh_from_db()
+
+        response = get_view_for_user(
+            viewname="profile-detail",
+            client=client,
+            user=u1,
+            reverse_kwargs={"username": u1.username},
+        )
+
+        assert org1.title not in response.content.decode()

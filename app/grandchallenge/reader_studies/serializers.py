@@ -1,5 +1,6 @@
 from django.core.exceptions import ValidationError
-from rest_framework.fields import CharField, ReadOnlyField
+from django.db.transaction import on_commit
+from rest_framework.fields import CharField, ReadOnlyField, URLField
 from rest_framework.relations import HyperlinkedRelatedField, SlugRelatedField
 from rest_framework.serializers import (
     HyperlinkedModelSerializer,
@@ -7,10 +8,9 @@ from rest_framework.serializers import (
     SerializerMethodField,
 )
 
-from grandchallenge.api.swagger import swagger_schema_fields_for_charfield
 from grandchallenge.cases.models import Image
+from grandchallenge.components.schemas import ANSWER_TYPE_SCHEMA
 from grandchallenge.reader_studies.models import (
-    ANSWER_TYPE_SCHEMA,
     Answer,
     CategoricalOption,
     Question,
@@ -26,12 +26,12 @@ class CategoricalOptionSerializer(ModelSerializer):
 
 
 class QuestionSerializer(HyperlinkedModelSerializer):
-    answer_type = CharField(source="get_answer_type_display")
+    answer_type = CharField(source="get_answer_type_display", read_only=True)
     reader_study = HyperlinkedRelatedField(
         view_name="api:reader-study-detail", read_only=True
     )
-    form_direction = CharField(source="get_direction_display")
-    image_port = CharField(source="get_image_port_display")
+    form_direction = CharField(source="get_direction_display", read_only=True)
+    image_port = CharField(source="get_image_port_display", read_only=True)
     options = CategoricalOptionSerializer(many=True, read_only=True)
 
     class Meta:
@@ -48,13 +48,6 @@ class QuestionSerializer(HyperlinkedModelSerializer):
             "required",
             "options",
         )
-        swagger_schema_fields = swagger_schema_fields_for_charfield(
-            answer_type=model._meta.get_field("answer_type"),
-            form_direction=model._meta.get_field(
-                "direction"
-            ),  # model.direction gets remapped
-            image_port=model._meta.get_field("image_port"),
-        )
 
 
 class ReaderStudySerializer(HyperlinkedModelSerializer):
@@ -62,12 +55,16 @@ class ReaderStudySerializer(HyperlinkedModelSerializer):
     hanging_list_images = SerializerMethodField()
     help_text = ReadOnlyField()
     case_text = ReadOnlyField(source="cleaned_case_text")
+    logo = URLField(source="logo.x20.url", read_only=True)
+    url = URLField(source="get_absolute_url", read_only=True)
 
     class Meta:
         model = ReaderStudy
         fields = (
             "api_url",
+            "url",
             "slug",
+            "logo",
             "description",
             "help_text",
             "hanging_list_images",
@@ -130,13 +127,15 @@ class AnswerSerializer(HyperlinkedModelSerializer):
         )
 
         if self.instance:
-            add_scores.apply_async(
-                kwargs={
-                    "instance_pk": str(self.instance.pk),
-                    "pk_set": list(
-                        map(str, images.values_list("pk", flat=True))
-                    ),
-                }
+            on_commit(
+                lambda: add_scores.apply_async(
+                    kwargs={
+                        "instance_pk": str(self.instance.pk),
+                        "pk_set": list(
+                            map(str, images.values_list("pk", flat=True))
+                        ),
+                    }
+                )
             )
         return attrs if not self.instance else {"answer": answer}
 

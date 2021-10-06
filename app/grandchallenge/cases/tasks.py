@@ -1,32 +1,35 @@
 import os
 import tarfile
 import zipfile
-from collections import defaultdict
+from dataclasses import asdict, dataclass
 from datetime import timedelta
 from itertools import chain
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Callable, Dict, Iterable, List, Sequence, Set, Tuple
+from typing import (
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
 
+from billiard.exceptions import SoftTimeLimitExceeded, TimeLimitExceeded
 from celery import shared_task
 from django.conf import settings
 from django.contrib.auth.models import Group
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.core.files import File
+from django.db import OperationalError, transaction
+from django.db.transaction import on_commit
+from django.template.defaultfilters import pluralize
 from django.utils import timezone
+from panimg import convert
+from panimg.models import PanImgResult
 
-from grandchallenge.cases.emails import send_failed_file_import
-from grandchallenge.cases.image_builders.dicom import image_builder_dicom
-from grandchallenge.cases.image_builders.fallback import image_builder_fallback
-from grandchallenge.cases.image_builders.metaio_mhd_mha import (
-    image_builder_mhd,
-)
-from grandchallenge.cases.image_builders.nifti import image_builder_nifti
-from grandchallenge.cases.image_builders.tiff import image_builder_tiff
-from grandchallenge.cases.image_builders.types import (
-    ImageBuilderResult,
-    ImporterResult,
-)
 from grandchallenge.cases.log import logger
 from grandchallenge.cases.models import (
     FolderUpload,
@@ -39,10 +42,7 @@ from grandchallenge.jqfileupload.widgets.uploader import (
     NotFoundError,
     StagedAjaxFile,
 )
-
-
-class ProvisioningError(Exception):
-    pass
+from grandchallenge.notifications.models import Notification, NotificationType
 
 
 def _populate_tmp_dir(tmp_dir, upload_session):
@@ -53,7 +53,7 @@ def _populate_tmp_dir(tmp_dir, upload_session):
         duplicate.error = "Filename not unique"
         saf = StagedAjaxFile(duplicate.staged_file_id)
         duplicate.staged_file_id = None
-        saf.delete()
+        on_commit(saf.delete)
         duplicate.consumed = False
         duplicate.save()
 
@@ -113,19 +113,10 @@ def populate_provisioning_directory(
             exceptions_raised += 1
 
     if exceptions_raised > 0:
-        raise ProvisioningError(
+        raise RuntimeError(
             f"{exceptions_raised} errors occurred during provisioning of the "
             f"image construction directory"
         )
-
-
-DEFAULT_IMAGE_BUILDERS = [
-    image_builder_mhd,
-    image_builder_nifti,
-    image_builder_dicom,
-    image_builder_tiff,
-    image_builder_fallback,
-]
 
 
 def remove_duplicate_files(
@@ -257,7 +248,7 @@ def extract_files(source_path: Path):
         check_compressed_and_extract(file_path, source_path, checked_paths)
 
 
-@shared_task
+@shared_task(**settings.CELERY_TASK_DECORATOR_KWARGS["acks-late-2xlarge"])
 def build_images(*, upload_session_pk):
     """
     Task which analyzes an upload session and attempts to extract and store
@@ -280,46 +271,51 @@ def build_images(*, upload_session_pk):
     of analyzed images in order to free up space on the server (only done if the
     function does not error out).
 
-    If a job fails due to a RawImageUploadSession.DoesNotExist error, the
-    job is queued for a retry (max 15 times).
-
     Parameters
     ----------
     upload_session_uuid: UUID
         The uuid of the upload sessions that should be analyzed.
     """
-    upload_session = RawImageUploadSession.objects.get(
+    session_queryset = RawImageUploadSession.objects.filter(
         pk=upload_session_pk
-    )  # type: RawImageUploadSession
+    ).select_for_update(nowait=True)
+    files_queryset = RawImageFile.objects.filter(
+        upload_session_id=upload_session_pk
+    ).select_for_update(nowait=True)
 
-    if (
-        upload_session.status != upload_session.REQUEUED
-        or upload_session.rawimagefile_set.filter(consumed=True).exists()
-    ):
-        raise RuntimeError("Job is not set to be executed.")
+    with transaction.atomic():
+        if files_queryset.filter(consumed=True).exists():
+            raise RuntimeError("Session has consumed files.")
 
-    upload_session.status = upload_session.STARTED
-    upload_session.save()
+        upload_session = session_queryset.get()
+        upload_session.status = upload_session.STARTED
+        upload_session.save()
 
-    with TemporaryDirectory(prefix="construct_image_volumes-") as tmp_dir:
-        tmp_dir = Path(tmp_dir)
+    try:
+        with transaction.atomic():
+            # Acquire locks
+            _ = files_queryset.all()
+            upload_session = session_queryset.get()
 
-        try:
-            _populate_tmp_dir(tmp_dir, upload_session)
-            _handle_raw_image_files(tmp_dir, upload_session)
-        except ProvisioningError as e:
-            upload_session.error_message = str(e)
-            upload_session.status = upload_session.FAILURE
-            upload_session.save()
-            return
-        except Exception:
-            upload_session.error_message = "An unknown error occurred"
-            upload_session.status = upload_session.FAILURE
-            upload_session.save()
-            raise
-        else:
+            with TemporaryDirectory() as tmp_dir:
+                tmp_dir = Path(tmp_dir)
+                _populate_tmp_dir(tmp_dir, upload_session)
+                _handle_raw_image_files(tmp_dir, upload_session)
+
             upload_session.status = upload_session.SUCCESS
             upload_session.save()
+    except OperationalError:
+        # Could not acquire locks
+        raise
+    except (SoftTimeLimitExceeded, TimeLimitExceeded):
+        upload_session.error_message = "Time limit exceeded."
+        upload_session.status = upload_session.FAILURE
+        upload_session.save()
+    except Exception:
+        upload_session.error_message = "An unexpected error occurred"
+        upload_session.status = upload_session.FAILURE
+        upload_session.save()
+        raise
 
 
 def _handle_raw_image_files(tmp_dir, upload_session):
@@ -344,7 +340,9 @@ def _handle_raw_image_files(tmp_dir, upload_session):
         for raw_image_file in session_files
     }
 
-    importer_result = import_images(files=input_files, origin=upload_session,)
+    importer_result = import_images(
+        input_directory=tmp_dir, origin=upload_session,
+    )
 
     _handle_raw_files(
         input_files=input_files,
@@ -357,11 +355,19 @@ def _handle_raw_image_files(tmp_dir, upload_session):
     _delete_session_files(session_files=session_files,)
 
 
+@dataclass
+class ImporterResult:
+    new_images: Set[Image]
+    consumed_files: Set[Path]
+    file_errors: Dict[Path, List[str]]
+
+
 def import_images(
     *,
-    files: Set[Path],
-    origin: RawImageUploadSession = None,
-    builders: Iterable[Callable] = None,
+    input_directory: Path,
+    origin: Optional[RawImageUploadSession] = None,
+    builders: Optional[Iterable[Callable]] = None,
+    recurse_subdirectories: bool = True,
 ) -> ImporterResult:
     """
     Creates Image objects from a set of files.
@@ -382,57 +388,98 @@ def import_images(
 
     """
 
-    new_images = set()
-    new_image_files = set()
-    new_folders = set()
-    consumed_files = set()
-    file_errors = defaultdict(list)
-
-    created_image_prefix = str(origin.pk)[:8] if origin is not None else ""
-    builders = builders if builders is not None else DEFAULT_IMAGE_BUILDERS
-
-    for builder in builders:
-        builder_result: ImageBuilderResult = builder(
-            files=files - consumed_files,
-            created_image_prefix=created_image_prefix,
+    with TemporaryDirectory() as output_directory:
+        panimg_result = convert(
+            input_directory=input_directory,
+            output_directory=output_directory,
+            builders=builders,
+            recurse_subdirectories=recurse_subdirectories,
         )
 
-        new_images |= builder_result.new_images
-        new_image_files |= builder_result.new_image_files
-        new_folders |= builder_result.new_folders
-        consumed_files |= builder_result.consumed_files
+        _check_all_ids(panimg_result=panimg_result)
 
-        for filepath, msg in builder_result.file_errors.items():
-            file_errors[filepath].append(msg)
+        django_result = _convert_panimg_to_django(panimg_result=panimg_result)
 
-    _store_images(
-        origin=origin,
-        images=new_images,
-        image_files=new_image_files,
-        folders=new_folders,
-    )
+        _store_images(
+            origin=origin,
+            images=django_result.new_images,
+            image_files=django_result.new_image_files,
+            folders=django_result.new_folders,
+        )
 
     return ImporterResult(
+        new_images=django_result.new_images,
+        consumed_files=panimg_result.consumed_files,
+        file_errors=panimg_result.file_errors,
+    )
+
+
+def _check_all_ids(*, panimg_result: PanImgResult):
+    """
+    Check the integrity of the conversion job.
+
+    All new_ids must be new, this will be found when saving the Django objects.
+    Every new image must have at least one file associated with it, and
+    new folders can only belong to new images.
+    """
+    new_ids = {im.pk for im in panimg_result.new_images}
+    new_file_ids = {f.image_id for f in panimg_result.new_image_files}
+    new_folder_ids = {f.image_id for f in panimg_result.new_folders}
+
+    if new_ids != new_file_ids:
+        raise ValidationError(
+            "Each new image should have at least 1 file assigned"
+        )
+
+    if new_folder_ids - new_ids:
+        raise ValidationError("New folder does not belong to a new image")
+
+
+@dataclass
+class ConversionResult:
+    new_images: Set[Image]
+    new_image_files: Set[ImageFile]
+    new_folders: Set[FolderUpload]
+
+
+def _convert_panimg_to_django(
+    *, panimg_result: PanImgResult
+) -> ConversionResult:
+    new_images = {Image(**asdict(im)) for im in panimg_result.new_images}
+    new_image_files = {
+        ImageFile(
+            image_id=f.image_id,
+            image_type=f.image_type,
+            file=File(open(f.file, "rb"), f.file.name),
+        )
+        for f in panimg_result.new_image_files
+    }
+    new_folders = {
+        FolderUpload(**asdict(f)) for f in panimg_result.new_folders
+    }
+
+    return ConversionResult(
         new_images=new_images,
-        consumed_files=consumed_files,
-        file_errors=file_errors,
+        new_image_files=new_image_files,
+        new_folders=new_folders,
     )
 
 
 def _store_images(
     *,
-    origin: RawImageUploadSession,
+    origin: Optional[RawImageUploadSession],
     images: Set[Image],
     image_files: Set[ImageFile],
     folders: Set[FolderUpload],
 ):
-    with transaction.atomic():
-        for image in images:
-            image.origin = origin
-            image.save()
+    for image in images:
+        image.origin = origin
+        image.full_clean()
+        image.save()
 
-        for obj in chain(image_files, folders):
-            obj.save()
+    for obj in chain(image_files, folders):
+        obj.full_clean()
+        obj.save()
 
 
 def _handle_raw_files(
@@ -467,8 +514,12 @@ def _handle_raw_files(
             f"{len(unconsumed_files)} file(s) could not be imported"
         )
 
-        if upload_session.creator and upload_session.creator.email:
-            send_failed_file_import(n_errors, upload_session)
+        if upload_session.creator:
+            Notification.send(
+                type=NotificationType.NotificationTypeChoices.IMAGE_IMPORT_STATUS,
+                message=f"failed with {n_errors} error{pluralize(n_errors)}",
+                action_object=upload_session,
+            )
 
 
 def _delete_session_files(*, session_files):
@@ -492,7 +543,7 @@ def _delete_session_files(*, session_files):
                     continue
 
                 file.staged_file_id = None
-                saf.delete()
+                on_commit(saf.delete)
             file.save()
         except NotFoundError:
             pass

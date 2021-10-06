@@ -1,4 +1,4 @@
-{% extends "challenge.html" %}
+{% extends "base.html" %}
 {% load url %}
 {% load profiles %}
 {% load evaluation_extras %}
@@ -17,6 +17,10 @@
         <li class="breadcrumb-item active"
             aria-current="page">{{ object.pk }}</li>
     </ol>
+{% endblock %}
+
+{% block topbar2 %}
+    {% include "evaluation/partials/phase_navbar.html" %}
 {% endblock %}
 
 {% block content %}
@@ -64,6 +68,13 @@
             <dd>
                 <a href="{% url 'evaluation:leaderboard' challenge_short_name=object.submission.phase.challenge.short_name slug=object.submission.phase.slug %}">
                     {{ object.submission.phase.title }}</a></dd>
+
+            {% if object.submission.algorithm_image %}
+                <dt>Algorithm</dt>
+                <dd>
+                    <a href="{{ object.submission.algorithm_image.algorithm.get_absolute_url }}">{{ object.submission.algorithm_image.algorithm.title }}</a>
+                </dd>
+            {% endif %}
 
             <dt>Submission created</dt>
             <dd>{{ object.submission.created }}</dd>
@@ -134,11 +145,11 @@
             </dd>
         {% endif %}
 
-        {% if object.submission.phase.show_publication_url %}
-            <dt>Publication:</dt>
+        {% if object.submission.phase.show_supplementary_url %}
+            <dt>{{ object.submission.phase.supplementary_url_label }}:</dt>
             <dd>
-                {% if object.submission.publication_url %}
-                    <a href="{{ object.submission.publication_url }}">
+                {% if object.submission.supplementary_url %}
+                    <a href="{{ object.submission.supplementary_url }}">
                         <i class="fa fa-file"></i>
                     </a>
                 {% endif %}
@@ -148,15 +159,6 @@
         {% if object.submission.phase.display_submission_comments %}
             <dt>Comment:</dt>
             <dd>{{ object.submission.comment }}</dd>
-        {% endif %}
-
-        {% if request.user.is_staff and object.submission.annotationset %}
-            <dt>Predictions</dt>
-            <dd>
-                <a class="btn btn-primary"
-                   href="{{ object.submission.annotationset.get_absolute_url }}">
-                    <i class="fa fa-eye"></i> View Predictions</a>
-            </dd>
         {% endif %}
     </dl>
 
@@ -192,5 +194,4 @@
             </dl>
         {% endif %}
     {% endif %}
-
 {% endblock %}

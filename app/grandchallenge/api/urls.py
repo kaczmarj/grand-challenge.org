@@ -1,9 +1,7 @@
-from django.conf import settings
 from django.conf.urls import include
-from django.urls import path, re_path
-from drf_yasg import openapi
-from drf_yasg.views import get_schema_view
-from rest_framework import permissions, routers
+from django.urls import path
+from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
+from rest_framework import routers
 
 from grandchallenge.algorithms.views import (
     AlgorithmImageViewSet,
@@ -17,7 +15,12 @@ from grandchallenge.cases.views import (
     RawImageUploadSessionViewSet,
 )
 from grandchallenge.evaluation.views.api import EvaluationViewSet
+from grandchallenge.github.views import github_webhook
 from grandchallenge.jqfileupload.views import StagedFileViewSet
+from grandchallenge.notifications.views import (
+    FollowViewSet,
+    NotificationViewSet,
+)
 from grandchallenge.profiles.views import UserProfileViewSet
 from grandchallenge.reader_studies.views import (
     AnswerViewSet,
@@ -37,8 +40,7 @@ from grandchallenge.retina_api.views import (
     SinglePolygonViewSet,
     TextAnnotationViewSet,
 )
-from grandchallenge.statistics.views import MetricsAPIView
-from grandchallenge.subdomains.utils import reverse_lazy
+from grandchallenge.timezones.views import TimezoneAPIView
 from grandchallenge.workstation_configs.views import WorkstationConfigViewSet
 from grandchallenge.workstations.views import SessionViewSet
 
@@ -76,6 +78,9 @@ router.register(r"chunked-uploads", StagedFileViewSet, basename="staged-file")
 router.register(
     r"evaluations", EvaluationViewSet, basename="evaluation",
 )
+
+# Notifications
+router.register(r"notifications", NotificationViewSet, basename="notification")
 
 # Profiles
 router.register(
@@ -150,6 +155,9 @@ router.register(
     basename="retina-etdrs-grid-annotation",
 )
 
+# Follows (Subscriptions)
+router.register(r"subscriptions", FollowViewSet, basename="follow")
+
 # Workstations
 router.register(
     r"workstations/configs",
@@ -158,34 +166,23 @@ router.register(
 )
 router.register(r"workstations/sessions", SessionViewSet)
 
-schema_view = get_schema_view(
-    openapi.Info(
-        title=f"{settings.SESSION_COOKIE_DOMAIN.lstrip('.')} API",
-        default_version="v1",
-        description=f"The API for {settings.SESSION_COOKIE_DOMAIN.lstrip('.')}.",
-        license=openapi.License(name="Apache License 2.0"),
-        terms_of_service=reverse_lazy(
-            "policies:detail", kwargs={"slug": "terms-of-service"}
-        ),
-    ),
-    public=True,
-    permission_classes=(permissions.AllowAny,),
-    patterns=[
+
+class SchemaView(SpectacularAPIView):
+    urlconf = [
         path("api/v1/", include(router.urls)),
-        path("api/v1/metrics/", MetricsAPIView.as_view()),
-    ],
-)
+    ]
+
 
 urlpatterns = [
-    re_path(
-        r"^swagger(?P<format>\.json|\.yaml)$",
-        schema_view.without_ui(),
-        name="schema-json",
-    ),
+    path("schema/", SchemaView.as_view(), name="schema"),
     # Do not namespace the router.urls without updating the view names in
     # the serializers
     path("v1/", include(router.urls)),
-    path("v1/metrics/", MetricsAPIView.as_view(), name="metrics"),
-    path("auth/", include("rest_framework.urls", namespace="rest_framework")),
-    path("", schema_view.with_ui("swagger"), name="schema-docs"),
+    path("v1/github/", github_webhook, name="github-webhook"),
+    path("v1/timezone/", TimezoneAPIView.as_view(), name="timezone"),
+    path(
+        "",
+        SpectacularSwaggerView.as_view(url_name="api:schema"),
+        name="swagger-ui",
+    ),
 ]

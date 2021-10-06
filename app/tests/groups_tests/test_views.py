@@ -1,19 +1,15 @@
 import pytest
-from django.core.management import call_command
 from lxml.html.diff import html_escape
-from userena.models import UserenaSignup
 
-from grandchallenge.subdomains.utils import reverse
 from tests.algorithms_tests.factories import AlgorithmFactory
 from tests.archives_tests.factories import ArchiveFactory
 from tests.factories import (
-    SUPER_SECURE_TEST_PASSWORD,
     UserFactory,
     WorkstationFactory,
 )
 from tests.organizations_tests.factories import OrganizationFactory
 from tests.reader_studies_tests.factories import ReaderStudyFactory
-from tests.utils import get_http_host, get_view_for_user
+from tests.utils import get_view_for_user
 from tests.verification_tests.factories import VerificationFactory
 
 
@@ -53,9 +49,6 @@ class TestGroupManagementViews:
                 user=admin,
                 data={"q": u.username.lower()},
             )
-
-        response = get_user_autocomplete()
-        assert response.status_code == 403
 
         o.add_editor(admin)
 
@@ -109,10 +102,7 @@ class TestAutocompleteViews:
         last_name = "Doe"
 
         if is_verified:
-            call_command("check_permissions")
-            u = UserenaSignup.objects.create_user(
-                "userena", "userena@test.com", "testpassword", active=True
-            )
+            u = UserFactory()
             VerificationFactory(user=u, is_verified=True)
             u.first_name = first_name
             u.last_name = last_name
@@ -153,10 +143,7 @@ class TestAutocompleteViews:
         admin = UserFactory()
         archive.add_editor(admin)
 
-        call_command("check_permissions")
-        user = UserenaSignup.objects.create_user(
-            "userena", "userena@test.com", "testpassword", active=True
-        )
+        user = UserFactory()
         VerificationFactory(user=user, is_verified=True)
 
         response = get_view_for_user(
@@ -168,28 +155,3 @@ class TestAutocompleteViews:
         assert response.status_code == 200
 
         assert str(user.pk) in response.json()["results"][0]["id"]
-
-    def test_autocomplete_num_queries(self, client, django_assert_num_queries):
-
-        archive = ArchiveFactory()
-        admin = UserFactory()
-        archive.add_editor(admin)
-
-        user = UserFactory()
-
-        url = reverse("users-autocomplete", kwargs={})
-
-        client.login(
-            username=user.username, password=SUPER_SECURE_TEST_PASSWORD
-        )
-
-        method = client.get
-
-        url, kwargs = get_http_host(
-            url=url, kwargs={"data": {"q": user.username}}
-        )
-        try:
-            with django_assert_num_queries(20) as _:
-                method(url, **kwargs)
-        finally:
-            client.logout()

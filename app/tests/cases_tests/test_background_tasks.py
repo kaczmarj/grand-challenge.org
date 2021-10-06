@@ -2,27 +2,35 @@ import os
 import shutil
 from pathlib import Path
 from typing import Dict, List, Tuple
+from unittest import mock
 
 import SimpleITK
 import pytest
+from actstream.actions import is_following
+from billiard.exceptions import SoftTimeLimitExceeded
 from django.contrib.auth.models import Group
 from django.core.exceptions import ValidationError
-
-from grandchallenge.cases.image_builders.metaio_utils import (
+from django_capture_on_commit_callbacks import capture_on_commit_callbacks
+from panimg.image_builders.metaio_utils import (
     ADDITIONAL_HEADERS,
     EXPECTED_HEADERS,
     HEADERS_MATCHING_NUM_TIMEPOINTS,
     parse_mh_header,
 )
+
 from grandchallenge.cases.models import (
     Image,
     RawImageFile,
     RawImageUploadSession,
 )
-from grandchallenge.cases.tasks import check_compressed_and_extract
+from grandchallenge.cases.tasks import (
+    build_images,
+    check_compressed_and_extract,
+)
 from grandchallenge.jqfileupload.widgets.uploader import StagedAjaxFile
+from grandchallenge.notifications.models import Notification
 from tests.cases_tests import RESOURCE_PATH
-from tests.factories import UserFactory
+from tests.factories import UploadSessionFactory, UserFactory
 from tests.jqfileupload_tests.external_test_support import (
     create_file_from_filepath,
 )
@@ -50,7 +58,9 @@ def create_raw_upload_image_session(
         ).delete()
 
     upload_session.save()
-    upload_session.process_images(linked_task=linked_task)
+
+    with capture_on_commit_callbacks(execute=True):
+        upload_session.process_images(linked_task=linked_task)
 
     return upload_session, uploaded_images
 
@@ -270,10 +280,8 @@ def test_errors_on_files_with_duplicate_file_names(settings):
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("format", ["mha", "mhd"])
-def test_mhd_file_annotation_creation(settings, format):
+def test_mhd_file_annotation_creation(settings):
     # Override the celery settings
-    settings.ITK_INTERNAL_FILE_FORMAT = format
     settings.task_eager_propagates = (True,)
     settings.task_always_eager = (True,)
 
@@ -448,7 +456,7 @@ def test_failed_dicom_files_are_retained(settings):
     images = [f"dicom/{x}.dcm" for x in range(1, 21)]
     session, _ = create_raw_upload_image_session(images=images)
     session.refresh_from_db()
-    session.process_images()
+
     assert Image.objects.count() == 1
     assert not any(
         RawImageFile.objects.values_list("staged_file_id", flat=True)
@@ -460,7 +468,7 @@ def test_failed_dicom_files_are_retained(settings):
     images = [f"dicom/{x}.dcm" for x in range(1, 22)]
     session, _ = create_raw_upload_image_session(images=images)
     session.refresh_from_db()
-    session.process_images()
+
     assert Image.objects.count() == 1
     assert not any(
         RawImageFile.objects.values_list("staged_file_id", flat=True)
@@ -474,7 +482,42 @@ def test_failed_dicom_files_are_retained(settings):
     g.user_set.add(user)
     session, _ = create_raw_upload_image_session(images=images, user=user)
     session.refresh_from_db()
-    session.process_images()
+
     assert Image.objects.count() == 1
     assert all(RawImageFile.objects.values_list("staged_file_id", flat=True))
     RawImageFile.objects.all().delete()
+
+
+@pytest.mark.django_db
+@mock.patch(
+    "grandchallenge.cases.tasks._handle_raw_image_files",
+    side_effect=SoftTimeLimitExceeded(),
+)
+def test_soft_time_limit(_):
+    session = UploadSessionFactory()
+    session.status = session.REQUEUED
+    session.save()
+    build_images(upload_session_pk=session.pk)
+    session.refresh_from_db()
+    assert session.status == session.FAILURE
+    assert session.error_message == "Time limit exceeded."
+
+
+@pytest.mark.django_db
+def test_failed_image_import_notification():
+    image = ["corrupt.png"]
+    session, _ = create_raw_upload_image_session(images=image)
+
+    build_images(upload_session_pk=session.pk)
+    session.refresh_from_db()
+
+    assert RawImageUploadSession.objects.count() == 1
+    assert is_following(
+        user=RawImageUploadSession.objects.get().creator,
+        obj=RawImageUploadSession.objects.get(),
+    )
+    assert Notification.objects.count() == 1
+    assert (
+        Notification.objects.get().user
+        == RawImageUploadSession.objects.get().creator
+    )

@@ -1,7 +1,9 @@
+from bleach import clean
 from crispy_forms.bootstrap import Tab, TabHolder
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import ButtonHolder, Layout, Submit
 from django import forms
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db.models.functions import Lower
@@ -14,7 +16,11 @@ from guardian.shortcuts import get_objects_for_user
 
 from grandchallenge.algorithms.models import Algorithm
 from grandchallenge.core.forms import SaveFormInitMixin
-from grandchallenge.core.validators import ExtensionValidator
+from grandchallenge.core.templatetags.remove_whitespace import oxford_comma
+from grandchallenge.core.validators import (
+    ExtensionValidator,
+    MimeTypeValidator,
+)
 from grandchallenge.core.widgets import JSONEditorWidget
 from grandchallenge.evaluation.models import (
     EXTRA_RESULT_COLUMNS_SCHEMA,
@@ -31,12 +37,15 @@ phase_options = ("title",)
 submission_options = (
     "submission_page_html",
     "creator_must_be_verified",
-    "daily_submission_limit",
+    "submission_limit",
+    "submission_limit_period",
     "allow_submission_comments",
     "supplementary_file_choice",
     "supplementary_file_label",
     "supplementary_file_help_text",
-    "publication_url_choice",
+    "supplementary_url_choice",
+    "supplementary_url_label",
+    "supplementary_url_help_text",
 )
 
 scoring_options = (
@@ -54,7 +63,7 @@ scoring_options = (
 leaderboard_options = (
     "display_submission_comments",
     "show_supplementary_file_link",
-    "show_publication_url",
+    "show_supplementary_url",
     "evaluation_comparison_observable_url",
 )
 
@@ -132,11 +141,13 @@ class MethodForm(SaveFormInitMixin, forms.ModelForm):
         widget=uploader.AjaxUploadWidget(multifile=False, auto_commit=False),
         label="Evaluation Method Container",
         validators=[
-            ExtensionValidator(allowed_extensions=(".tar", ".tar.gz"))
+            ExtensionValidator(
+                allowed_extensions=(".tar", ".tar.gz", ".tar.xz")
+            )
         ],
         help_text=(
-            ".tar.gz archive of the container image produced from the command "
-            "'docker save IMAGE | gzip -c > IMAGE.tar.gz'. See "
+            ".tar.xz archive of the container image produced from the command "
+            "'docker save IMAGE | xz -c > IMAGE.tar.xz'. See "
             "https://docs.docker.com/engine/reference/commandline/save/"
         ),
     )
@@ -146,6 +157,15 @@ class MethodForm(SaveFormInitMixin, forms.ModelForm):
         self.fields["chunked_upload"].widget.user = user
         self.fields["phase"].queryset = challenge.phase_set.all()
 
+    def clean_chunked_upload(self):
+        files = self.cleaned_data["chunked_upload"]
+        if (
+            sum([f.size for f in files])
+            > settings.COMPONENTS_MAXIMUM_IMAGE_SIZE
+        ):
+            raise ValidationError("File size limit exceeded")
+        return files
+
     class Meta:
         model = Method
         fields = ["phase", "chunked_upload"]
@@ -153,9 +173,10 @@ class MethodForm(SaveFormInitMixin, forms.ModelForm):
 
 submission_fields = (
     "creator",
+    "phase",
     "comment",
     "supplementary_file",
-    "publication_url",
+    "supplementary_url",
     "chunked_upload",
 )
 
@@ -164,7 +185,10 @@ class SubmissionForm(forms.ModelForm):
     chunked_upload = UploadedAjaxFileList(
         widget=uploader.AjaxUploadWidget(multifile=False, auto_commit=False),
         label="Predictions File",
-        validators=[ExtensionValidator(allowed_extensions=(".zip", ".csv"))],
+        validators=[
+            MimeTypeValidator(allowed_types=("application/zip", "text/plain")),
+            ExtensionValidator(allowed_extensions=(".zip", ".csv")),
+        ],
     )
     algorithm = ModelChoiceField(
         queryset=None,
@@ -176,76 +200,115 @@ class SubmissionForm(forms.ModelForm):
         ),
     )
 
-    def __init__(
-        self,
-        *args,
-        user,
-        creator_must_be_verified=False,
-        algorithm_submission=False,
-        display_comment_field=False,
-        supplementary_file_choice=Phase.OFF,
-        supplementary_file_label="",
-        supplementary_file_help_text="",
-        publication_url_choice=Phase.OFF,
-        **kwargs,
+    def __init__(  # noqa: C901
+        self, *args, user, phase: Phase, **kwargs,
     ):
-        """
-        Conditionally render the comment field based on the
-        display_comment_field kwarg
-        """
         super().__init__(*args, **kwargs)
-
-        self.creator_must_be_verified = creator_must_be_verified
-
-        if not display_comment_field:
-            del self.fields["comment"]
-
-        if supplementary_file_label:
-            self.fields["supplementary_file"].label = supplementary_file_label
-
-        if supplementary_file_help_text:
-            self.fields[
-                "supplementary_file"
-            ].help_text = supplementary_file_help_text
-
-        if supplementary_file_choice == Phase.REQUIRED:
-            self.fields["supplementary_file"].required = True
-        elif supplementary_file_choice == Phase.OFF:
-            del self.fields["supplementary_file"]
-
-        if publication_url_choice == Phase.REQUIRED:
-            self.fields["publication_url"].required = True
-        elif publication_url_choice == Phase.OFF:
-            del self.fields["publication_url"]
-
-        if algorithm_submission:
-            del self.fields["chunked_upload"]
-
-            self.fields["algorithm"].queryset = get_objects_for_user(
-                user,
-                f"{Algorithm._meta.app_label}.change_{Algorithm._meta.model_name}",
-                Algorithm,
-            ).order_by("title")
-        else:
-            del self.fields["algorithm"]
-
-            self.fields["chunked_upload"].widget.user = user
 
         self.fields["creator"].queryset = get_user_model().objects.filter(
             pk=user.pk
         )
         self.fields["creator"].initial = user
 
+        # Note that the validation of creator and algorithm require
+        # access to the phase properties, so those validations
+        # would need to be updated if phase selections are allowed.
+        self._phase = phase
+        self.fields["phase"].queryset = Phase.objects.filter(pk=phase.pk)
+        self.fields["phase"].initial = phase
+
+        if not self._phase.allow_submission_comments:
+            del self.fields["comment"]
+
+        if self._phase.supplementary_file_label:
+            self.fields[
+                "supplementary_file"
+            ].label = self._phase.supplementary_file_label
+
+        if self._phase.supplementary_file_help_text:
+            self.fields["supplementary_file"].help_text = clean(
+                self._phase.supplementary_file_help_text
+            )
+
+        if self._phase.supplementary_file_choice == Phase.REQUIRED:
+            self.fields["supplementary_file"].required = True
+        elif self._phase.supplementary_file_choice == Phase.OFF:
+            del self.fields["supplementary_file"]
+
+        if self._phase.supplementary_url_label:
+            self.fields[
+                "supplementary_url"
+            ].label = self._phase.supplementary_url_label
+
+        if self._phase.supplementary_url_help_text:
+            self.fields["supplementary_url"].help_text = clean(
+                self._phase.supplementary_url_help_text
+            )
+
+        if self._phase.supplementary_url_choice == Phase.REQUIRED:
+            self.fields["supplementary_url"].required = True
+        elif self._phase.supplementary_url_choice == Phase.OFF:
+            del self.fields["supplementary_url"]
+
+        if self._phase.submission_kind == self._phase.SubmissionKind.ALGORITHM:
+            del self.fields["chunked_upload"]
+
+            self.fields["algorithm"].queryset = get_objects_for_user(
+                user, "algorithms.change_algorithm", Algorithm,
+            ).order_by("title")
+
+            self._algorithm_inputs = self._phase.algorithm_inputs.all()
+            self._algorithm_outputs = self._phase.algorithm_outputs.all()
+        else:
+            del self.fields["algorithm"]
+
+            self.fields["chunked_upload"].widget.user = user
+
         self.helper = FormHelper(self)
         self.helper.layout.append(Submit("save", "Save"))
 
+    def clean_chunked_upload(self):
+        chunked_upload = self.cleaned_data["chunked_upload"]
+
+        if (
+            sum([f.size for f in chunked_upload])
+            > settings.PREDICTIONS_FILE_MAX_BYTES
+        ):
+            raise ValidationError("Predictions file is too large.")
+
+        return chunked_upload
+
     def clean_algorithm(self):
         algorithm = self.cleaned_data["algorithm"]
+
+        if set(self._algorithm_inputs) != set(algorithm.inputs.all()):
+            raise ValidationError(
+                "The inputs for your algorithm do not match the ones "
+                "required by this phase, please update your algorithm "
+                "to work with: "
+                f"{oxford_comma(self._algorithm_inputs)}. "
+            )
+
+        if set(self._algorithm_outputs) != set(algorithm.outputs.all()):
+            raise ValidationError(
+                "The outputs from your algorithm do not match the ones "
+                "required by this phase, please update your algorithm "
+                "to produce: "
+                f"{oxford_comma(self._algorithm_outputs)}. "
+            )
 
         if algorithm.latest_ready_image is None:
             raise ValidationError(
                 "This algorithm does not have a usable container image. "
                 "Please add one and try again."
+            )
+
+        if Submission.objects.filter(
+            algorithm_image=algorithm.latest_ready_image, phase=self._phase,
+        ).exists():
+            raise ValidationError(
+                "A submission for this algorithm container image "
+                "for this phase already exists."
             )
 
         return algorithm
@@ -258,7 +321,7 @@ class SubmissionForm(forms.ModelForm):
         except ObjectDoesNotExist:
             user_is_verified = False
 
-        if self.creator_must_be_verified and not user_is_verified:
+        if self._phase.creator_must_be_verified and not user_is_verified:
             error_message = format_html(
                 "You must verify your account before you can make a "
                 "submission to this phase. Please "
@@ -271,12 +334,32 @@ class SubmissionForm(forms.ModelForm):
 
             raise ValidationError(error_message)
 
+        is_challenge_admin = self._phase.challenge.is_admin(user=creator)
+        has_remaining_submissions = (
+            self._phase.get_next_submission(user=creator)[
+                "remaining_submissions"
+            ]
+            >= 1
+        )
+        has_pending_evaluations = self._phase.has_pending_evaluations(
+            user=creator
+        )
+
+        can_submit = is_challenge_admin or (
+            has_remaining_submissions and not has_pending_evaluations
+        )
+
+        if not can_submit:
+            error_message = "A new submission cannot be created for this user"
+            self.add_error(None, error_message)
+            raise ValidationError(error_message)
+
         return creator
 
     class Meta:
         model = Submission
         fields = submission_fields
-        widgets = {"creator": forms.HiddenInput}
+        widgets = {"creator": forms.HiddenInput, "phase": forms.HiddenInput}
 
 
 class LegacySubmissionForm(SubmissionForm):
@@ -289,9 +372,5 @@ class LegacySubmissionForm(SubmissionForm):
             Lower("username")
         )
 
-        # For legacy submissions an admin is able to create submissions
-        # for any participant
-        self.creator_must_be_verified = False
-
     class Meta(SubmissionForm.Meta):
-        widgets = {"creator": Select2Widget}
+        widgets = {"creator": Select2Widget, "phase": forms.HiddenInput}

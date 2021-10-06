@@ -1,4 +1,5 @@
 import pytest
+from django_capture_on_commit_callbacks import capture_on_commit_callbacks
 
 from grandchallenge.reader_studies.models import Question
 from tests.factories import ImageFactory, UserFactory
@@ -86,7 +87,7 @@ def test_assign_score(settings):
     im = ImageFactory()
     q1 = QuestionFactory(reader_study=rs)
     q2 = QuestionFactory(
-        reader_study=rs, answer_type=Question.ANSWER_TYPE_MULTIPLE_CHOICE
+        reader_study=rs, answer_type=Question.AnswerType.MULTIPLE_CHOICE
     )
     e, r1, r2 = UserFactory(), UserFactory(), UserFactory()
 
@@ -95,32 +96,41 @@ def test_assign_score(settings):
     rs.add_reader(r1)
     rs.add_reader(r2)
 
-    a1 = AnswerFactory(question=q1, creator=r1, answer="foo")
+    with capture_on_commit_callbacks(execute=True):
+        a1 = AnswerFactory(question=q1, creator=r1, answer="foo")
     a1.images.add(im)
     assert a1.score is None
 
-    gt = AnswerFactory(
-        question=q1, creator=e, answer="foo", is_ground_truth=True
-    )
-    gt.images.add(im)
+    with capture_on_commit_callbacks(execute=True):
+        gt = AnswerFactory(
+            question=q1, creator=e, answer="foo", is_ground_truth=True
+        )
+        gt.images.add(im)
     a1.refresh_from_db()
     assert a1.score == 1.0
 
-    a2 = AnswerFactory(question=q1, creator=r2, answer="foo")
-    a2.images.add(im)
+    with capture_on_commit_callbacks(execute=True):
+        a2 = AnswerFactory(question=q1, creator=r2, answer="foo")
+        a2.images.add(im)
     a2.refresh_from_db()
     assert a2.score == 1.0
 
-    a1 = AnswerFactory(question=q2, creator=r1, answer=[])
-    a1.images.add(im)
+    with capture_on_commit_callbacks(execute=True):
+        a1 = AnswerFactory(question=q2, creator=r1, answer=[])
+        a1.images.add(im)
+    a1.refresh_from_db()
     assert a1.score is None
 
-    gt = AnswerFactory(question=q2, creator=e, answer=[], is_ground_truth=True)
-    gt.images.add(im)
+    with capture_on_commit_callbacks(execute=True):
+        gt = AnswerFactory(
+            question=q2, creator=e, answer=[], is_ground_truth=True
+        )
+        gt.images.add(im)
     a1.refresh_from_db()
     assert a1.score == 1.0
 
-    a2 = AnswerFactory(question=q2, creator=r2, answer=[])
-    a2.images.add(im)
+    with capture_on_commit_callbacks(execute=True):
+        a2 = AnswerFactory(question=q2, creator=r2, answer=[])
+        a2.images.add(im)
     a2.refresh_from_db()
     assert a2.score == 1.0

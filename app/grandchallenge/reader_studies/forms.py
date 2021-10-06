@@ -50,7 +50,7 @@ from grandchallenge.subdomains.utils import reverse_lazy
 READER_STUDY_HELP_TEXTS = {
     "title": "The title of this reader study.",
     "logo": "The logo for this reader study.",
-    "social_image": "An image for this reader study which is displayed when posting the reader study link on social media. Should be square with a resolution of 640x320 px (1280x640 px for best display).",
+    "social_image": "An image for this reader study which is displayed when posting the reader study link on social media. Should have a resolution of 640x320 px (1280x640 px for best display).",
     "description": "Describe what this reader study is for.",
     "workstation": (
         "Which workstation should be used for this reader study? "
@@ -70,6 +70,14 @@ READER_STUDY_HELP_TEXTS = {
     "help_text_markdown": (
         "Extra information that will be presented to the reader in the help "
         "text modal and on the reader study detail page."
+    ),
+    "publications": format_lazy(
+        (
+            "The publications associated with this reader study. "
+            'If your publication is missing click <a href="{}">here</a> to add it '
+            "and then refresh this page."
+        ),
+        reverse_lazy("publications:create"),
     ),
 }
 
@@ -161,8 +169,11 @@ class ReaderStudyUpdateForm(ReaderStudyCreateForm, ModelForm):
             "hanging_list": (
                 "A list of hangings. "
                 "The hanging defines which image (the hanging value) "
-                "should be assigned to which image port. "
-                'e.g., [{"main":"im1.mhd","secondary":"im2.mhd"}]'
+                "should be assigned to which image port or overlay. "
+                "Options are: main, secondary, tertiary, quaternary, "
+                "quinary, senary, septenary, octonary, nonary, denary. "
+                "For instance: "
+                '[{"main":"im1.mhd","main-overlay":"im1-overlay.mhd"}]'
             ),
             "case_text": (
                 "Free text that can be included for each case, where the key "

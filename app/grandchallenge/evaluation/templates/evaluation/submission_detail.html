@@ -1,4 +1,4 @@
-{% extends "challenge.html" %}
+{% extends "base.html" %}
 {% load url %}
 {% load humanize %}
 
@@ -17,6 +17,12 @@
     </ol>
 {% endblock %}
 
+{% block topbar2 %}
+    {% if "change_challenge" in challenge_perms or user_is_participant %}
+        {% include "evaluation/partials/phase_navbar.html" with submission_nav=True %}
+    {% endif %}
+{% endblock %}
+
 {% block content %}
 
     <h2>Submission {{ object.pk }}</h2>
@@ -33,7 +39,7 @@
 
         <dt>Creator</dt>
         <dd>
-            <a href="{% url 'userena_profile_detail' object.creator.username %}">{{ object.creator }}</a>
+            <a href="{% url 'profile-detail' object.creator.username %}">{{ object.creator }}</a>
         </dd>
 
         <dt>Comment</dt>
@@ -88,16 +94,10 @@
                         <a href="{{ evaluation.method.get_absolute_url }}">{{ evaluation.method.id }}</a>
                     </td>
                     <td>
-                    <span class="badge
-                    {% if evaluation.status == evaluation.FAILURE or evaluation.status == evaluation.CANCELLED %}
-                        badge-danger
-                    {% elif evaluation.status == evaluation.RETRY %}
-                        badge-warning
-                    {% elif evaluation.status == evaluation.SUCCESS %}
-                        badge-success
-                    {% else %}
-                        badge-info
-                    {% endif %}">
+                    <span class="badge badge-{{ evaluation.status_context }}">
+                        {% if evaluation.animate %}
+                            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                        {% endif %}
                         {{ evaluation.get_status_display }}
                     </span>
                     </td>

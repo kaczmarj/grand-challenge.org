@@ -1,5 +1,7 @@
 from django.contrib import admin
+from django.db.transaction import on_commit
 
+from grandchallenge.components.admin import ComponentImageAdmin
 from grandchallenge.evaluation.models import (
     Evaluation,
     Method,
@@ -14,15 +16,6 @@ class PhaseAdmin(admin.ModelAdmin):
     search_fields = ("pk",)
 
 
-class MethodAdmin(admin.ModelAdmin):
-    ordering = ("-created",)
-    list_display = ("pk", "created", "phase", "ready", "status")
-    list_filter = ("phase__challenge__short_name",)
-    search_fields = ("pk",)
-    readonly_fields = ("creator", "phase")
-    exclude = ("image",)
-
-
 class SubmissionAdmin(admin.ModelAdmin):
     ordering = ("-created",)
     list_display = ("pk", "created", "phase", "creator")
@@ -33,12 +26,20 @@ class SubmissionAdmin(admin.ModelAdmin):
     )
     readonly_fields = (
         "creator",
-        "creators_ip",
-        "creators_user_agent",
         "phase",
         "predictions_file",
         "algorithm_image",
     )
+
+
+def requeue_evaluations(modeladmin, request, queryset):
+    queryset.update(status=Evaluation.RETRY)
+    for evaluation in queryset:
+        on_commit(evaluation.execute)
+
+
+requeue_evaluations.short_description = "Requeue selected evaluations"
+requeue_evaluations.allowed_permissions = ("change",)
 
 
 class EvaluationAdmin(admin.ModelAdmin):
@@ -64,10 +65,14 @@ class EvaluationAdmin(admin.ModelAdmin):
         "stdout",
         "stderr",
         "error_message",
+        "input_prefixes",
+        "task_on_success",
+        "task_on_failure",
     )
+    actions = (requeue_evaluations,)
 
 
 admin.site.register(Phase, PhaseAdmin)
-admin.site.register(Method, MethodAdmin)
+admin.site.register(Method, ComponentImageAdmin)
 admin.site.register(Submission, SubmissionAdmin)
 admin.site.register(Evaluation, EvaluationAdmin)

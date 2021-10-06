@@ -106,7 +106,7 @@ class Migration(migrations.Migration):
                         default=list,
                         help_text="A JSON object that contains the extra columns from metrics.json that will be displayed on the results page. ",
                         validators=[
-                            grandchallenge.core.validators.JSONSchemaValidator(
+                            grandchallenge.core.validators.JSONValidator(
                                 schema={
                                     "$schema": "http://json-schema.org/draft-06/schema#",
                                     "definitions": {},
@@ -270,7 +270,7 @@ class Migration(migrations.Migration):
                             ("req", "Required"),
                         ],
                         default="off",
-                        help_text="Show a publication url field on the submission page so that users can submit a link to a publication that corresponds to their submission. Off turns this feature off, Optional means that including the url is optional for the user, Required means that the user must provide an url.",
+                        help_text="Show a supplementary url field on the submission page so that users can submit a link to a publication that corresponds to their submission. Off turns this feature off, Optional means that including the url is optional for the user, Required means that the user must provide an url.",
                         max_length=3,
                     ),
                 ),
@@ -278,14 +278,14 @@ class Migration(migrations.Migration):
                     "show_publication_url",
                     models.BooleanField(
                         default=False,
-                        help_text="Show a link to the publication on the results page",
+                        help_text="Show a link to the supplementary url on the results page",
                     ),
                 ),
                 (
                     "daily_submission_limit",
                     models.PositiveIntegerField(
                         default=10,
-                        help_text="The limit on the number of times that a user can make a submission in a 24 hour period.",
+                        help_text="The limit on the number of times that a user can make a submission over the submission limit period. Set this to 0 to close submissions for this phase.",
                     ),
                 ),
                 (
@@ -463,7 +463,7 @@ class Migration(migrations.Migration):
                     "publication_url",
                     models.URLField(
                         blank=True,
-                        help_text="A URL for the publication associated with this submission.",
+                        help_text="A URL associated with this submission.",
                     ),
                 ),
                 (
@@ -519,12 +519,16 @@ class Migration(migrations.Migration):
                     "image",
                     models.FileField(
                         blank=True,
-                        help_text=".tar.gz archive of the container image produced from the command 'docker save IMAGE | gzip -c > IMAGE.tar.gz'. See https://docs.docker.com/engine/reference/commandline/save/",
+                        help_text=".tar.xz archive of the container image produced from the command 'docker save IMAGE | xz -c > IMAGE.tar.xz'. See https://docs.docker.com/engine/reference/commandline/save/",
                         storage=grandchallenge.core.storage.PrivateS3Storage(),
                         upload_to=grandchallenge.components.models.docker_image_path,
                         validators=[
                             grandchallenge.core.validators.ExtensionValidator(
-                                allowed_extensions=(".tar", ".tar.gz")
+                                allowed_extensions=(
+                                    ".tar",
+                                    ".tar.gz",
+                                    ".tar.xz",
+                                )
                             )
                         ],
                     ),

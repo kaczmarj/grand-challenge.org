@@ -20,11 +20,11 @@ from rest_framework.permissions import DjangoObjectPermissions
 from rest_framework.response import Response
 from rest_framework.settings import api_settings
 from rest_framework.viewsets import GenericViewSet, ReadOnlyModelViewSet
-from rest_framework_csv.renderers import PaginatedCSVRenderer
 from rest_framework_guardian.filters import ObjectPermissionsFilter
 
 from grandchallenge.algorithms.tasks import create_algorithm_jobs_for_session
 from grandchallenge.archives.tasks import add_images_to_archive
+from grandchallenge.cases.filters import ImageFilterSet
 from grandchallenge.cases.models import (
     Image,
     ImageFile,
@@ -37,11 +37,9 @@ from grandchallenge.cases.serializers import (
     RawImageUploadSessionPatchSerializer,
     RawImageUploadSessionSerializer,
 )
-from grandchallenge.core.permissions.rest_framework import (
-    DjangoObjectOnlyWithCustomPostPermissions,
-)
+from grandchallenge.core.renderers import PaginatedCSVRenderer
 from grandchallenge.datatables.views import Column, PaginatedTableListView
-from grandchallenge.jqfileupload.widgets.uploader import StagedAjaxFile
+from grandchallenge.jqfileupload.models import StagedFile
 from grandchallenge.reader_studies.tasks import (
     add_image_to_answer,
     add_images_to_reader_study,
@@ -54,7 +52,7 @@ class RawImageUploadSessionList(
 ):
     model = RawImageUploadSession
     permission_required = f"{RawImageUploadSession._meta.app_label}.view_{RawImageUploadSession._meta.model_name}"
-    login_url = reverse_lazy("userena_signin")
+    login_url = reverse_lazy("account_login")
     row_template = "cases/rawimageuploadsession_row.html"
     search_fields = [
         "pk",
@@ -73,7 +71,7 @@ class RawImageUploadSessionDetail(
     model = RawImageUploadSession
     permission_required = f"{RawImageUploadSession._meta.app_label}.view_{RawImageUploadSession._meta.model_name}"
     raise_exception = True
-    login_url = reverse_lazy("userena_signin")
+    login_url = reverse_lazy("account_login")
 
 
 class OSDImageDetail(
@@ -84,7 +82,7 @@ class OSDImageDetail(
         f"{Image._meta.app_label}.view_{Image._meta.model_name}"
     )
     raise_exception = True
-    login_url = reverse_lazy("userena_signin")
+    login_url = reverse_lazy("account_login")
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -101,22 +99,13 @@ class OSDImageDetail(
 
 class ImageViewSet(ReadOnlyModelViewSet):
     serializer_class = HyperlinkedImageSerializer
-    queryset = Image.objects.all().prefetch_related(
-        "files",
-        "archive_set",
-        "componentinterfacevalue_set__algorithms_jobs_as_input",
-        "readerstudies",
-    )
+    queryset = Image.objects.all().prefetch_related("files")
     permission_classes = (DjangoObjectPermissions,)
     filter_backends = (
         DjangoFilterBackend,
         ObjectPermissionsFilter,
     )
-    filterset_fields = (
-        "study",
-        "origin",
-        "archive",
-    )
+    filterset_class = ImageFilterSet
     renderer_classes = (
         *api_settings.DEFAULT_RENDERER_CLASSES,
         PaginatedCSVRenderer,
@@ -126,8 +115,10 @@ class ImageViewSet(ReadOnlyModelViewSet):
 class RawImageUploadSessionViewSet(
     CreateModelMixin, RetrieveModelMixin, ListModelMixin, GenericViewSet
 ):
-    queryset = RawImageUploadSession.objects.all()
-    permission_classes = [DjangoObjectOnlyWithCustomPostPermissions]
+    queryset = RawImageUploadSession.objects.prefetch_related(
+        "rawimagefile_set"
+    ).all()
+    permission_classes = [DjangoObjectPermissions]
     filter_backends = [ObjectPermissionsFilter]
 
     def perform_create(self, serializer):
@@ -145,15 +136,15 @@ class RawImageUploadSessionViewSet(
         if any(f_id is None for f_id in file_ids):
             raise ValidationError("File has not been staged")
 
-        files = [StagedAjaxFile(f_id) for f_id in file_ids]
+        chunks = StagedFile.objects.filter(file_id__in=file_ids)
 
-        if not all(s.exists for s in files):
-            raise ValidationError("File does not exist")
-
-        if len({f.name for f in files}) != len(files):
+        if len({c.client_filename for c in chunks}) != len(staged_files):
             raise ValidationError("Filenames must be unique")
 
-        if sum([f.size for f in files]) > settings.UPLOAD_SESSION_MAX_BYTES:
+        if (
+            sum([f.end_byte - f.start_byte for f in chunks])
+            > settings.UPLOAD_SESSION_MAX_BYTES
+        ):
             raise ValidationError(
                 "Total size of all files exceeds the upload limit"
             )
@@ -234,5 +225,5 @@ class RawImageFileViewSet(
 ):
     serializer_class = RawImageFileSerializer
     queryset = RawImageFile.objects.all()
-    permission_classes = [DjangoObjectOnlyWithCustomPostPermissions]
+    permission_classes = [DjangoObjectPermissions]
     filter_backends = [ObjectPermissionsFilter]

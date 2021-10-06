@@ -12,6 +12,7 @@ from django.contrib.auth.models import Group
 from django.contrib.sites.models import Site
 
 from grandchallenge.cases.models import Image
+from grandchallenge.components.models import ComponentInterface
 from grandchallenge.reader_studies.models import Question
 from tests.annotations_tests.factories import (
     BooleanClassificationAnnotationFactory,
@@ -30,16 +31,20 @@ from tests.annotations_tests.factories import (
     SinglePolygonAnnotationFactory,
 )
 from tests.archives_tests.factories import ArchiveFactory
-from tests.cases_tests.factories import ImageFactoryWithoutImageFile
+from tests.archives_tests.test_models import create_archive_items_for_images
+from tests.cases_tests.factories import ImageFactoryWithImageFile
+from tests.components_tests.factories import ComponentInterfaceFactory
 from tests.evaluation_tests.factories import MethodFactory
 from tests.factories import (
     ChallengeFactory,
     ImageFactory,
     UserFactory,
 )
+from tests.fixtures import create_uploaded_image
 from tests.patients_tests.factories import PatientFactory
 from tests.reader_studies_tests.factories import (
     AnswerFactory,
+    CategoricalOptionFactory,
     QuestionFactory,
     ReaderStudyFactory,
 )
@@ -169,14 +174,20 @@ def challenge_set_with_evaluation(challenge_set):
 
 
 def docker_image(
-    tmpdir_factory, docker_client, docker_api_client, path, label
+    tmpdir_factory,
+    docker_client,
+    docker_api_client,
+    path,
+    label,
+    full_path=None,
 ):
     """Create the docker container."""
-    im, _ = docker_client.images.build(
-        path=os.path.join(
+    if not full_path:
+        full_path = os.path.join(
             os.path.split(__file__)[0], path, "resources", "docker",
-        ),
-        tag=f"test-{label}:latest",
+        )
+    im, _ = docker_client.images.build(
+        path=full_path, tag=f"test-{label}:latest",
     )
     assert im.id in [x.id for x in docker_client.images.list()]
     image = docker_api_client.get_image(f"test-{label}:latest")
@@ -215,6 +226,21 @@ def algorithm_image(tmpdir_factory, docker_client, docker_api_client):
         docker_api_client,
         path="algorithms_tests",
         label="algorithm",
+    )
+
+
+@pytest.fixture(scope="session")
+def algorithm_io_image(tmpdir_factory, docker_client, docker_api_client):
+    """Create the example algorithm container."""
+    return docker_image(
+        tmpdir_factory,
+        docker_client,
+        docker_api_client,
+        path="",
+        label="algorithm-io",
+        full_path=os.path.join(
+            os.path.split(__file__)[0], "resources", "gc_demo_algorithm",
+        ),
     )
 
 
@@ -590,16 +616,22 @@ def generate_archive_patient_study_image_set():
     study113 = StudyFactory(patient=patient11)
     study121 = StudyFactory(patient=patient12)
     study122 = StudyFactory(patient=patient12)
-    images111 = ImageFactoryWithoutImageFile.create_batch(4, study=study111)
-    images112 = ImageFactoryWithoutImageFile.create_batch(5, study=study112)
-    images113 = ImageFactoryWithoutImageFile.create_batch(6, study=study113)
-    images121 = ImageFactoryWithoutImageFile.create_batch(2, study=study121)
-    images122 = ImageFactoryWithoutImageFile.create_batch(3, study=study122)
-    images211 = ImageFactoryWithoutImageFile.create_batch(4, study=None)
-    archive1 = ArchiveFactory.create(
-        images=[*images111, *images112, *images113, *images121, *images122]
-    )
-    archive2 = ArchiveFactory.create(images=images211)
+    images111 = ImageFactoryWithImageFile.create_batch(4, study=study111)
+    images112 = ImageFactoryWithImageFile.create_batch(5, study=study112)
+    images113 = ImageFactoryWithImageFile.create_batch(6, study=study113)
+    images121 = ImageFactoryWithImageFile.create_batch(2, study=study121)
+    images122 = ImageFactoryWithImageFile.create_batch(3, study=study122)
+    images211 = ImageFactoryWithImageFile.create_batch(4, study=None)
+
+    archive1, archive2 = ArchiveFactory.create_batch(2)
+
+    create_archive_items_for_images(images111, archive1)
+    create_archive_items_for_images(images112, archive1)
+    create_archive_items_for_images(images113, archive1)
+    create_archive_items_for_images(images121, archive1)
+    create_archive_items_for_images(images122, archive1)
+    create_archive_items_for_images(images211, archive2)
+
     return ArchivePatientStudyImageSet(
         archive1=archive1,
         patient11=patient11,
@@ -638,17 +670,17 @@ def reader_study_with_gt():
     q1, q2, q3 = [
         QuestionFactory(
             reader_study=rs,
-            answer_type=Question.ANSWER_TYPE_BOOL,
+            answer_type=Question.AnswerType.BOOL,
             question_text="q1",
         ),
         QuestionFactory(
             reader_study=rs,
-            answer_type=Question.ANSWER_TYPE_BOOL,
+            answer_type=Question.AnswerType.BOOL,
             question_text="q2",
         ),
         QuestionFactory(
             reader_study=rs,
-            answer_type=Question.ANSWER_TYPE_BOOL,
+            answer_type=Question.AnswerType.BOOL,
             question_text="q3",
         ),
     ]
@@ -675,6 +707,51 @@ def reader_study_with_gt():
 
 
 @pytest.fixture
+def reader_study_with_mc_gt(reader_study_with_gt):
+    rs = reader_study_with_gt
+
+    q_choice = QuestionFactory(
+        reader_study=rs,
+        answer_type=Question.AnswerType.CHOICE,
+        question_text="C",
+    )
+    q_multiple_choice = QuestionFactory(
+        reader_study=rs,
+        answer_type=Question.AnswerType.MULTIPLE_CHOICE,
+        question_text="MC",
+    )
+
+    c_options = [
+        CategoricalOptionFactory(question=q_choice, title="fee"),
+        CategoricalOptionFactory(question=q_choice, title="foh"),
+        CategoricalOptionFactory(question=q_choice, title="fum"),
+    ]
+
+    mc_options = [
+        CategoricalOptionFactory(question=q_multiple_choice, title="fee"),
+        CategoricalOptionFactory(question=q_multiple_choice, title="foh"),
+        CategoricalOptionFactory(question=q_multiple_choice, title="fum"),
+    ]
+
+    editor = rs.editors_group.user_set.first()
+    images = reader_study_with_gt.images.all()
+    for question, answer in [
+        (q_choice, c_options[0].id),
+        (q_multiple_choice, [mc_options[0].id, mc_options[1].id]),
+    ]:
+        ans = AnswerFactory(
+            question=question,
+            creator=editor,
+            answer=answer,
+            is_ground_truth=True,
+        )
+        for im in images:
+            ans.images.add(im)
+
+    return rs
+
+
+@pytest.fixture
 def image_with_image_level_annotations():
     grader = UserFactory()
     add_to_graders_group([grader])
@@ -692,3 +769,76 @@ def image_with_image_level_annotations():
         "text": ImageTextAnnotationFactory(**factory_kwargs),
     }
     return image, grader, annotations
+
+
+@pytest.fixture
+def component_interfaces():
+    interfaces = [
+        {
+            "title": "Boolean",
+            "kind": ComponentInterface.Kind.BOOL,
+            "relative_path": "bool",
+        },
+        {
+            "title": "String",
+            "kind": ComponentInterface.Kind.STRING,
+            "relative_path": "string",
+        },
+        {
+            "title": "Integer",
+            "kind": ComponentInterface.Kind.INTEGER,
+            "relative_path": "int",
+        },
+        {
+            "title": "Float",
+            "kind": ComponentInterface.Kind.FLOAT,
+            "relative_path": "float",
+        },
+        {
+            "title": "2D bounding box",
+            "kind": ComponentInterface.Kind.TWO_D_BOUNDING_BOX,
+            "relative_path": "2d_bounding_box",
+        },
+        {
+            "title": "Multiple 2D bounding boxes",
+            "kind": ComponentInterface.Kind.MULTIPLE_TWO_D_BOUNDING_BOXES,
+            "relative_path": "multiple_2d_bounding_boxes",
+        },
+        {
+            "title": "Distance measurement",
+            "kind": ComponentInterface.Kind.DISTANCE_MEASUREMENT,
+            "relative_path": "distance_measurement",
+        },
+        {
+            "title": "Multiple distance measurements",
+            "kind": ComponentInterface.Kind.MULTIPLE_DISTANCE_MEASUREMENTS,
+            "relative_path": "multiple_distance_measurements",
+        },
+        {
+            "title": "Point",
+            "kind": ComponentInterface.Kind.POINT,
+            "relative_path": "point",
+        },
+        {
+            "title": "Multiple points",
+            "kind": ComponentInterface.Kind.MULTIPLE_POINTS,
+            "relative_path": "multiple_points",
+        },
+        {
+            "title": "Polygon",
+            "kind": ComponentInterface.Kind.POLYGON,
+            "relative_path": "polygon",
+        },
+        {
+            "title": "Multiple polygons",
+            "kind": ComponentInterface.Kind.MULTIPLE_POLYGONS,
+            "relative_path": "multiple_polygons",
+        },
+    ]
+
+    return [ComponentInterfaceFactory(**interface) for interface in interfaces]
+
+
+@pytest.fixture
+def uploaded_image():
+    return create_uploaded_image

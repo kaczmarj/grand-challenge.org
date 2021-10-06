@@ -2,13 +2,17 @@ import datetime
 import logging
 from itertools import chain, product
 
+from actstream.actions import follow, unfollow
+from actstream.models import Follow
 from django.conf import settings
 from django.contrib.auth.models import Group
+from django.contrib.contenttypes.models import ContentType
 from django.contrib.postgres.fields import ArrayField, CICharField
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.core.validators import validate_slug
 from django.db import models
-from django.db.models.signals import post_delete
+from django.db.models.signals import post_delete, pre_delete
+from django.db.transaction import on_commit
 from django.dispatch import receiver
 from django.template.loader import render_to_string
 from django.utils.html import format_html
@@ -20,6 +24,7 @@ from machina.apps.forum_permission.models import (
     GroupForumPermission,
     UserForumPermission,
 )
+from stdimage import JPEGField
 from tldextract import extract
 
 from grandchallenge.anatomy.models import BodyStructure
@@ -123,17 +128,19 @@ class ChallengeBase(models.Model):
             "used."
         ),
     )
-    logo = models.ImageField(
+    logo = JPEGField(
         upload_to=get_logo_path,
         storage=public_s3_storage,
         blank=True,
         help_text="A logo for this challenge. Should be square with a resolution of 640x640 px or higher.",
+        variations=settings.STDIMAGE_LOGO_VARIATIONS,
     )
-    social_image = models.ImageField(
+    social_image = JPEGField(
         upload_to=get_social_image_path,
         storage=public_s3_storage,
         blank=True,
-        help_text="An image for this challenge which is displayed when you post the link on social media. Should be square with a resolution of 640x320 px (1280x640 px for best display).",
+        help_text="An image for this challenge which is displayed when you post the link on social media. Should have a resolution of 640x320 px (1280x640 px for best display).",
+        variations=settings.STDIMAGE_SOCIAL_VARIATIONS,
     )
     hidden = models.BooleanField(
         default=True,
@@ -201,6 +208,10 @@ class ChallengeBase(models.Model):
     filter_classes = ArrayField(
         CICharField(max_length=32), default=list, editable=False
     )
+    highlight = models.BooleanField(
+        default=False,
+        help_text="Should this challenge be advertised on the home page?",
+    )
 
     objects = ChallengeManager()
 
@@ -247,7 +258,7 @@ class ChallengeBase(models.Model):
 
 
 class Challenge(ChallengeBase):
-    banner = models.ImageField(
+    banner = JPEGField(
         upload_to=get_banner_path,
         storage=public_s3_storage,
         blank=True,
@@ -255,6 +266,7 @@ class Challenge(ChallengeBase):
             "Image that gets displayed at the top of each page. "
             "Recommended resolution 2200x440 px."
         ),
+        variations=settings.STDIMAGE_BANNER_VARIATIONS,
     )
     disclaimer = models.CharField(
         max_length=2048,
@@ -286,8 +298,9 @@ class Challenge(ChallengeBase):
             "a data usage agreement here. You can use HTML markup here."
         ),
     )
+    use_workspaces = models.BooleanField(default=False)
     use_evaluation = models.BooleanField(
-        default=False,
+        default=True,
         help_text=(
             "If true, use the automated evaluation system. See the evaluation "
             "page created in the Challenge site."
@@ -303,17 +316,17 @@ class Challenge(ChallengeBase):
     admins_group = models.OneToOneField(
         Group,
         editable=False,
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name="admins_of_challenge",
     )
     participants_group = models.OneToOneField(
         Group,
         editable=False,
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name="participants_of_challenge",
     )
     forum = models.OneToOneField(
-        Forum, editable=False, on_delete=models.CASCADE
+        Forum, editable=False, on_delete=models.PROTECT
     )
     display_forum_link = models.BooleanField(
         default=False,
@@ -342,6 +355,8 @@ class Challenge(ChallengeBase):
         super().save(*args, **kwargs)
 
         if adding:
+            if self.creator:
+                self.add_admin(user=self.creator)
             self.update_permissions()
             self.create_forum_permissions()
             self.create_default_pages()
@@ -349,8 +364,10 @@ class Challenge(ChallengeBase):
             send_challenge_created_email(self)
 
         if adding or self.hidden != self._hidden_orig:
-            assign_evaluation_permissions.apply_async(
-                kwargs={"challenge_pk": self.pk}
+            on_commit(
+                lambda: assign_evaluation_permissions.apply_async(
+                    kwargs={"challenge_pk": self.pk}
+                )
             )
             self.update_user_forum_permissions()
 
@@ -441,12 +458,6 @@ class Challenge(ChallengeBase):
         self.admins_group = admins_group
         self.participants_group = participants_group
 
-        try:
-            self.creator.groups.add(admins_group)
-        except AttributeError:
-            # No creator set
-            pass
-
     def create_forum(self):
         f, created = Forum.objects.get_or_create(
             name=settings.FORUMS_CHALLENGE_CATEGORY_NAME, type=Forum.FORUM_CAT,
@@ -525,20 +536,28 @@ class Challenge(ChallengeBase):
     def add_participant(self, user):
         if user != get_anonymous_user():
             user.groups.add(self.participants_group)
+            follow(
+                user=user, obj=self.forum, actor_only=False, send_action=False
+            )
         else:
             raise ValueError("You cannot add the anonymous user to this group")
 
     def remove_participant(self, user):
         user.groups.remove(self.participants_group)
+        unfollow(user=user, obj=self.forum, send_action=False)
 
     def add_admin(self, user):
         if user != get_anonymous_user():
             user.groups.add(self.admins_group)
+            follow(
+                user=user, obj=self.forum, actor_only=False, send_action=False
+            )
         else:
             raise ValueError("You cannot add the anonymous user to this group")
 
     def remove_admin(self, user):
         user.groups.remove(self.admins_group)
+        unfollow(user=user, obj=self.forum, send_action=False)
 
     class Meta(ChallengeBase.Meta):
         verbose_name = "challenge"
@@ -587,3 +606,12 @@ class ExternalChallenge(ChallengeBase):
     @property
     def is_self_hosted(self):
         return False
+
+
+@receiver(pre_delete, sender=Challenge)
+@receiver(pre_delete, sender=ExternalChallenge)
+def delete_challenge_follows(*_, instance: Challenge, **__):
+    ct = ContentType.objects.filter(
+        app_label=instance._meta.app_label, model=instance._meta.model_name
+    ).get()
+    Follow.objects.filter(object_id=instance.pk, content_type=ct).delete()

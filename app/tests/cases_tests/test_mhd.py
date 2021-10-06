@@ -1,17 +1,21 @@
 import shutil
 import zlib
 from pathlib import Path
+from typing import List, Union
 
 import SimpleITK
 import pytest
-
-from grandchallenge.cases.image_builders.metaio_utils import (
+from panimg.exceptions import ValidationError
+from panimg.image_builders.metaio_utils import (
     ADDITIONAL_HEADERS,
+    FLOAT_OR_FLOAT_ARRAY_MATCH_REGEX,
     load_sitk_image,
-    load_sitk_image_with_nd_support,
     parse_mh_header,
 )
+
 from tests.cases_tests import RESOURCE_PATH
+
+MHD_WINDOW_DIR = RESOURCE_PATH / "mhd_window"
 
 
 def test_parse_header_valid_4d_mhd():
@@ -71,8 +75,6 @@ def test_parse_header_valid_mhd_with_extra_fields():
         "DimSize": "10 10 10",
         "ElementType": "MET_DOUBLE",
         "ElementDataFile": "image10x10x10.zraw",
-        "# Extra stuff": None,
-        "woohoo": None,
         "Some_values": '"Huh? \u2713\U0001f604"',
     }
 
@@ -81,6 +83,7 @@ def assert_sitk_img_equivalence(
     img: SimpleITK.Image, img_ref: SimpleITK.Image
 ):
     assert img.GetDimension() == img_ref.GetDimension()
+    assert img.GetDirection() == img.GetDirection()
     assert img.GetSize() == img_ref.GetSize()
     assert img.GetOrigin() == img_ref.GetOrigin()
     assert img.GetSpacing() == img_ref.GetSpacing()
@@ -120,7 +123,7 @@ def test_4d_mh_loader_without_datafile_fails(tmpdir):
     src = RESOURCE_PATH / "image10x11x12x13.mhd"
     dest = Path(tmpdir) / src.name
     shutil.copy(str(src), str(dest))
-    with pytest.raises(IOError):
+    with pytest.raises(RuntimeError, match="File cannot be read"):
         load_sitk_image(dest)
 
 
@@ -135,11 +138,11 @@ def test_4d_mh_loader_with_invalid_data_type_fails(tmpdir):
         targets.append(dest)
         shutil.copy(str(src), str(dest))
     tmp_header_file = targets[0]
-    with open(str(tmp_header_file), "r") as f:
+    with open(str(tmp_header_file)) as f:
         modified_header = f.read().replace("MET_UCHAR", "MET_OTHER")
     with open(str(tmp_header_file), "w") as f:
         f.write(modified_header)
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(RuntimeError, match="Unknown PixelType"):
         load_sitk_image(tmp_header_file)
 
 
@@ -154,7 +157,7 @@ def test_4d_mh_loader_with_uncompressed_data(tmpdir):
         targets.append(dest)
         shutil.copy(str(src), str(dest))
     tmp_header_file, tmp_data_file = targets
-    with open(str(tmp_header_file), "r") as f:
+    with open(str(tmp_header_file)) as f:
         modified_header = f.read().replace(
             "CompressedData = True", "CompressedData = False"
         )
@@ -171,7 +174,7 @@ def test_4d_mh_loader_with_more_than_4_dimensions_fails(tmpdir):
     src = RESOURCE_PATH / "image10x11x12x13.mhd"
     dest = Path(tmpdir) / src.name
     shutil.copy(str(src), str(dest))
-    with open(str(dest), "r") as f:
+    with open(str(dest)) as f:
         modified_header = f.read().replace("NDims = 4", "NDims = 5")
     with open(str(dest), "w") as f:
         f.write(modified_header)
@@ -190,6 +193,44 @@ def test_load_sitk_image_with_additional_meta_data(tmpdir, test_img: str):
         assert key in ADDITIONAL_HEADERS
         assert ADDITIONAL_HEADERS[key].match(sitk_image.GetMetaData(key))
     assert "Bogus" not in sitk_image.GetMetaDataKeys()
+
+
+@pytest.mark.parametrize(
+    "test_img, center, width",
+    [
+        ("image3x4.mhd", "20.5", "200.5"),
+        ("image3x4-len-1.mhd", "[20.5]", "[200.5]"),
+        ("image3x4-len-2.mhd", "[10.5, 20.5]", "[100.5, 200.5]"),
+    ],
+)
+def test_load_sitk_image_with_various_window_formats(
+    test_img: str,
+    center: Union[float, List[float]],
+    width: Union[float, List[float]],
+):
+    src = MHD_WINDOW_DIR / test_img
+    sitk_image = load_sitk_image(src)
+
+    assert center == sitk_image.GetMetaData("WindowCenter")
+    assert width == sitk_image.GetMetaData("WindowWidth")
+
+
+@pytest.mark.parametrize(
+    "test_img, error_msg",
+    [
+        ("image3x4-center-gt-width.mhd", "equal number"),
+        ("image3x4-width-gt-center.mhd", "equal number"),
+        ("image3x4-only-width-array.mhd", "different format"),
+        ("image3x4-only-center-array.mhd", "different format"),
+        ("image3x4-len-0.mhd", "does not match pattern"),
+    ],
+)
+def test_load_sitk_image_with_faulty_window_formats(
+    test_img: str, error_msg: str
+):
+    src = MHD_WINDOW_DIR / "errors" / test_img
+    with pytest.raises(ValidationError, match=error_msg):
+        load_sitk_image(src)
 
 
 @pytest.mark.parametrize("test_img", ["image10x11x12x13.mhd", "image3x4.mhd"])
@@ -213,32 +254,17 @@ def test_load_sitk_image_with_corrupt_additional_meta_data_fails(
     src = RESOURCE_PATH / "image10x11x12x13.mhd"
     dest = Path(tmpdir) / src.name
     shutil.copy(str(src), str(dest))
-    with open(str(dest), "r") as f:
+    with open(str(dest)) as f:
         lines = f.readlines()
     lines.insert(-1, f"{key} = {value}\n")
     with open(str(dest), "w") as f:
         f.writelines(lines)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValidationError):
         load_sitk_image(dest)
 
 
-@pytest.mark.parametrize(
-    "image",
-    (
-        RESOURCE_PATH / "image3x4.mhd",
-        RESOURCE_PATH / "image5x6x7.mhd",
-        RESOURCE_PATH / "image128x256x4RGB.mhd",
-        RESOURCE_PATH / "image10x10x10-extra-stuff.mhd",
-    ),
-)
-def test_4dloader_reproduces_normal_sitk_loader_results(image: Path):
-    img_ref = SimpleITK.ReadImage(str(image))
-    img = load_sitk_image_with_nd_support(mhd_file=image)
-    assert_sitk_img_equivalence(img, img_ref)
-
-
 def test_fail_on_invalid_utf8():
-    with pytest.raises(ValueError):
+    with pytest.raises(ValidationError):
         parse_mh_header(RESOURCE_PATH / "invalid_utf8.mhd")
 
 
@@ -249,7 +275,7 @@ def test_too_many_headers_file(tmpdir):
         for i in range(1000000):
             f.write(f"key{i} = {i}\n")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValidationError):
         parse_mh_header(test_file_path)
 
 
@@ -261,7 +287,7 @@ def test_line_too_long(tmpdir):
         for i in range(1000000):
             f.write(f"{i}")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValidationError):
         parse_mh_header(test_file_path)
 
 
@@ -272,3 +298,48 @@ def test_does_not_choke_on_empty_file(tmpdir):
         f.write("\n")
 
     assert parse_mh_header(test_file_path) == {}
+
+
+@pytest.mark.parametrize(
+    "string",
+    [
+        "1",
+        "1.001",
+        "-1e10",
+        "+1e10",
+        "00400",
+        "[1]",
+        "[1.1]",
+        "[1, 1]",
+        "[1.1, 0]",
+        "[0, 1.1]",
+        "[-1e10, +100, 00400]",
+        "[1, 2, 3, 4]",
+        "[1,2,3,4]",
+    ],
+)
+def test_regex_matching_float_arrays(string: str):
+    assert FLOAT_OR_FLOAT_ARRAY_MATCH_REGEX.match(string)
+
+
+@pytest.mark.parametrize(
+    "string",
+    [
+        "",
+        ".",
+        "[]",
+        "1,",
+        "1,  ",
+        "[1  ]",
+        "[  1]",
+        "[1",
+        "1]",
+        "[1,]",
+        "[ 1]",
+        "[ , ]",
+        "[,]",
+        "[1, 2, 3, 4,]",
+    ],
+)
+def test_regex_non_matching_faulty_array_and_floats(string: str):
+    assert not FLOAT_OR_FLOAT_ARRAY_MATCH_REGEX.match(string)

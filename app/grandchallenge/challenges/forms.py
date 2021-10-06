@@ -2,10 +2,13 @@ from crispy_forms.bootstrap import Tab, TabHolder
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import ButtonHolder, Layout, Submit
 from django import forms
+from django.core.exceptions import ValidationError
+from django.utils.text import format_lazy
 from django_select2.forms import Select2MultipleWidget
 from django_summernote.widgets import SummernoteInplaceWidget
 
 from grandchallenge.challenges.models import Challenge, ExternalChallenge
+from grandchallenge.subdomains.utils import reverse_lazy
 
 
 class ChallengeCreateForm(forms.ModelForm):
@@ -54,7 +57,12 @@ class ChallengeUpdateForm(forms.ModelForm):
         self.helper = FormHelper(self)
         self.helper.layout = Layout(
             TabHolder(
-                Tab("Information", *common_information_items, "disclaimer"),
+                Tab(
+                    "Information",
+                    *common_information_items,
+                    "display_forum_link",
+                    "disclaimer",
+                ),
                 Tab("Images", "banner", *common_images_items),
                 Tab("Event", *event_items),
                 Tab("Registration", *registration_items),
@@ -67,6 +75,7 @@ class ChallengeUpdateForm(forms.ModelForm):
         model = Challenge
         fields = [
             *common_information_items,
+            "display_forum_link",
             "disclaimer",
             "banner",
             *common_images_items,
@@ -85,6 +94,24 @@ class ChallengeUpdateForm(forms.ModelForm):
             "publications": Select2MultipleWidget,
             "registration_page_text": SummernoteInplaceWidget(),
         }
+        help_texts = {
+            "publications": format_lazy(
+                (
+                    "The publications associated with this archive. "
+                    'If your publication is missing click <a href="{}">here</a> to add it '
+                    "and then refresh this page."
+                ),
+                reverse_lazy("publications:create"),
+            )
+        }
+
+    def clean(self):
+        cleaned_data = super().clean()
+
+        if not cleaned_data["hidden"] and not cleaned_data.get("logo"):
+            raise ValidationError("A logo is required for public challenges")
+
+        return cleaned_data
 
 
 data_items = (
@@ -133,4 +160,14 @@ class ExternalChallengeUpdateForm(forms.ModelForm):
             "organizations": Select2MultipleWidget,
             "series": Select2MultipleWidget,
             "publications": Select2MultipleWidget,
+        }
+        help_texts = {
+            "publications": format_lazy(
+                (
+                    "The publications associated with this archive. "
+                    'If your publication is missing click <a href="{}">here</a> to add it '
+                    "and then refresh this page."
+                ),
+                reverse_lazy("publications:create"),
+            )
         }

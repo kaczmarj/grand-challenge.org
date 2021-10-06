@@ -1,3 +1,4 @@
+from crispy_forms.helper import FormHelper
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.forms import (
     Form,
@@ -12,12 +13,20 @@ from guardian.shortcuts import get_objects_for_user
 
 from grandchallenge.algorithms.models import Algorithm
 from grandchallenge.archives.models import Archive, ArchivePermissionRequest
+from grandchallenge.cases.forms import UploadRawImagesForm
 from grandchallenge.cases.models import Image
+from grandchallenge.components.form_fields import InterfaceFormField
+from grandchallenge.components.models import (
+    ComponentInterface,
+    ComponentInterfaceValue,
+    InterfaceKind,
+)
 from grandchallenge.core.forms import (
     PermissionRequestUpdateForm,
     SaveFormInitMixin,
     WorkstationUserFilterMixin,
 )
+from grandchallenge.core.templatetags.bleach import clean
 from grandchallenge.core.widgets import MarkdownEditorWidget
 from grandchallenge.groups.forms import UserGroupForm
 from grandchallenge.reader_studies.models import ReaderStudy
@@ -29,11 +38,12 @@ class ArchiveForm(WorkstationUserFilterMixin, SaveFormInitMixin, ModelForm):
         super().__init__(*args, **kwargs)
         self.fields["logo"].required = True
         self.fields["workstation"].required = True
-        self.fields[
-            "algorithms"
-        ].queryset = self.instance.algorithms.all() | get_objects_for_user(
-            kwargs["user"], "execute_algorithm", Algorithm
-        )
+        self.fields["algorithms"].queryset = (
+            self.instance.algorithms.all()
+            | get_objects_for_user(
+                kwargs["user"], "execute_algorithm", Algorithm
+            )
+        ).distinct()
 
     class Meta:
         model = Archive
@@ -69,6 +79,14 @@ class ArchiveForm(WorkstationUserFilterMixin, SaveFormInitMixin, ModelForm):
                     '<a href="{}">create a new one</a>.'
                 ),
                 reverse_lazy("workstation-configs:create"),
+            ),
+            "publications": format_lazy(
+                (
+                    "The publications associated with this archive. "
+                    'If your publication is missing click <a href="{}">here</a> to add it '
+                    "and then refresh this page."
+                ),
+                reverse_lazy("publications:create"),
             ),
         }
 
@@ -126,8 +144,8 @@ class ArchiveCasesToReaderStudyForm(SaveFormInitMixin, Form):
             ReaderStudy,
         ).order_by("title")
         self.fields["images"].queryset = Image.objects.filter(
-            archive=self.archive
-        )
+            componentinterfacevalue__archive_items__archive=self.archive
+        ).distinct()
         self.fields["images"].initial = self.fields["images"].queryset
 
     def clean_reader_study(self):
@@ -140,7 +158,9 @@ class ArchiveCasesToReaderStudyForm(SaveFormInitMixin, Form):
 
     def clean_images(self):
         images = self.cleaned_data["images"]
-        images = images.filter(archive=self.archive)
+        images = images.filter(
+            componentinterfacevalue__archive_items__archive=self.archive
+        )
         return images
 
     def clean(self):
@@ -156,3 +176,44 @@ class ArchiveCasesToReaderStudyForm(SaveFormInitMixin, Form):
             )
 
         return cleaned_data
+
+
+class AddCasesForm(UploadRawImagesForm):
+    interface = ModelChoiceField(
+        queryset=ComponentInterface.objects.filter(
+            kind__in=InterfaceKind.interface_type_image()
+        )
+    )
+
+    def save(self, commit=True):
+        self._linked_task.kwargs.update(
+            {"interface_pk": self.cleaned_data["interface"].pk}
+        )
+        return super().save(commit=commit)
+
+
+class ArchiveItemForm(SaveFormInitMixin, Form):
+    def __init__(
+        self, *args, archive=None, user=None, archive_item=None, **kwargs
+    ):
+        super().__init__(*args, **kwargs)
+
+        self.helper = FormHelper()
+
+        if archive_item:
+            values = archive_item.values.all()
+        else:
+            values = ComponentInterfaceValue.objects.none()
+
+        for inp in ComponentInterface.objects.all():
+            initial = values.filter(interface=inp).first()
+            if initial:
+                initial = initial.value
+            self.fields[inp.slug] = InterfaceFormField(
+                kind=inp.kind,
+                schema=inp.schema,
+                initial=initial or inp.default_value,
+                required=False,
+                user=user,
+                help_text=clean(inp.description) if inp.description else "",
+            ).field

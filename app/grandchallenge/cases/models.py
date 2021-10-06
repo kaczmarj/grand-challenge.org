@@ -1,23 +1,29 @@
 import logging
 import os
+from enum import Enum
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import List, Mapping, Union
 
+from actstream.actions import follow
+from actstream.models import Follow
 from django.conf import settings
 from django.contrib.auth.models import Group
+from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import models
 from django.db.models import Q
-from django.db.models.signals import post_delete
+from django.db.models.signals import post_delete, pre_delete
+from django.db.transaction import on_commit
 from django.dispatch import receiver
 from django.utils.text import get_valid_filename
 from guardian.shortcuts import assign_perm, get_groups_with_perms, remove_perm
-
-from grandchallenge.cases.image_builders.metaio_utils import (
+from panimg.image_builders.metaio_utils import (
     load_sitk_image,
     parse_mh_header,
 )
+from panimg.models import ColorSpace, ImageType
+
 from grandchallenge.core.models import UUIDModel
 from grandchallenge.core.storage import protected_s3_storage
 from grandchallenge.modalities.models import ImagingModality
@@ -58,7 +64,7 @@ class RawImageUploadSession(UUIDModel):
     )
 
     status = models.PositiveSmallIntegerField(
-        choices=STATUS_CHOICES, default=PENDING
+        choices=STATUS_CHOICES, default=PENDING, db_index=True
     )
 
     error_message = models.TextField(blank=False, null=True, default=None)
@@ -84,6 +90,12 @@ class RawImageUploadSession(UUIDModel):
                 assign_perm(
                     f"change_{self._meta.model_name}", self.creator, self
                 )
+                follow(
+                    user=self.creator,
+                    obj=self,
+                    send_action=False,
+                    actor_only=False,
+                )
 
     def process_images(self, linked_task=None):
         """
@@ -99,6 +111,9 @@ class RawImageUploadSession(UUIDModel):
         # Local import to avoid circular dependency
         from grandchallenge.cases.tasks import build_images
 
+        if self.status != self.PENDING:
+            raise RuntimeError("Job is not in PENDING state")
+
         RawImageUploadSession.objects.filter(pk=self.pk).update(
             status=RawImageUploadSession.REQUEUED
         )
@@ -110,7 +125,7 @@ class RawImageUploadSession(UUIDModel):
             linked_task.kwargs.update(kwargs)
             workflow |= linked_task
 
-        workflow.apply_async()
+        on_commit(workflow.apply_async)
 
     def get_absolute_url(self):
         return reverse(
@@ -120,6 +135,20 @@ class RawImageUploadSession(UUIDModel):
     @property
     def api_url(self):
         return reverse("api:upload-session-detail", kwargs={"pk": self.pk})
+
+
+@receiver(pre_delete, sender=RawImageUploadSession)
+def delete_session_follows(*_, instance: RawImageUploadSession, **__):
+    """
+    Deletes the related follows.
+
+    We use a signal rather than overriding delete() to catch usages of
+    bulk_delete.
+    """
+    ct = ContentType.objects.filter(
+        app_label=instance._meta.app_label, model=instance._meta.model_name
+    ).get()
+    Follow.objects.filter(object_id=instance.pk, content_type=ct).delete()
 
 
 class RawImageFile(UUIDModel):
@@ -175,10 +204,10 @@ def image_file_path(instance, filename):
 
 
 class Image(UUIDModel):
-    COLOR_SPACE_GRAY = "GRAY"
-    COLOR_SPACE_RGB = "RGB"
-    COLOR_SPACE_RGBA = "RGBA"
-    COLOR_SPACE_YCBCR = "YCBCR"
+    COLOR_SPACE_GRAY = ColorSpace.GRAY.value
+    COLOR_SPACE_RGB = ColorSpace.RGB.value
+    COLOR_SPACE_RGBA = ColorSpace.RGBA.value
+    COLOR_SPACE_YCBCR = ColorSpace.YCBCR.value
 
     COLOR_SPACES = (
         (COLOR_SPACE_GRAY, "GRAY"),
@@ -237,27 +266,67 @@ class Image(UUIDModel):
         (FOV_EMPTY, "Not applicable"),
     )
 
+    class PatientSex(str, Enum):  # TODO: import from panimg
+        MALE = "M"
+        FEMALE = "F"
+        OTHER = "O"
+
+    PATIENT_SEX_MALE = PatientSex.MALE.value
+    PATIENT_SEX_FEMALE = PatientSex.FEMALE.value
+    PATIENT_SEX_OTHER = PatientSex.OTHER.value
+    PATIENT_SEX_CHOICES = (
+        (PATIENT_SEX_MALE, "Male"),
+        (PATIENT_SEX_FEMALE, "Female"),
+        (PATIENT_SEX_OTHER, "Other"),
+    )
+
     name = models.CharField(max_length=4096)
-    study = models.ForeignKey(Study, on_delete=models.CASCADE, null=True)
+    study = models.ForeignKey(
+        Study, null=True, blank=True, on_delete=models.SET_NULL,
+    )
     origin = models.ForeignKey(
-        to=RawImageUploadSession, null=True, on_delete=models.SET_NULL
+        to=RawImageUploadSession,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
     )
     modality = models.ForeignKey(
-        ImagingModality, on_delete=models.SET_NULL, null=True
+        ImagingModality, null=True, blank=True, on_delete=models.SET_NULL,
     )
 
     width = models.IntegerField(blank=False)
     height = models.IntegerField(blank=False)
-    depth = models.IntegerField(null=True)
-    voxel_width_mm = models.FloatField(null=True)
-    voxel_height_mm = models.FloatField(null=True)
-    voxel_depth_mm = models.FloatField(null=True)
-    timepoints = models.IntegerField(null=True)
-    resolution_levels = models.IntegerField(null=True)
-    window_center = models.FloatField(null=True)
-    window_width = models.FloatField(null=True)
+    depth = models.IntegerField(null=True, blank=True)
+    voxel_width_mm = models.FloatField(null=True, blank=True)
+    voxel_height_mm = models.FloatField(null=True, blank=True)
+    voxel_depth_mm = models.FloatField(null=True, blank=True)
+    timepoints = models.IntegerField(null=True, blank=True)
+    resolution_levels = models.IntegerField(null=True, blank=True)
+    window_center = models.FloatField(null=True, blank=True)
+    window_width = models.FloatField(null=True, blank=True)
     color_space = models.CharField(
         max_length=5, blank=False, choices=COLOR_SPACES
+    )
+    patient_id = models.CharField(max_length=64, default="", blank=True)
+    # Max length for patient_name is 5 * 64 + 4 = 324, as described for value
+    # representation PN in the DICOM standard. See table at:
+    # http://dicom.nema.org/medical/dicom/current/output/chtml/part05/sect_6.2.html
+    patient_name = models.CharField(max_length=324, default="", blank=True)
+    patient_birth_date = models.DateField(null=True, blank=True)
+    patient_age = models.CharField(max_length=4, default="", blank=True)
+    patient_sex = models.CharField(
+        max_length=1, blank=True, choices=PATIENT_SEX_CHOICES, default="",
+    )
+    study_date = models.DateField(null=True, blank=True)
+    study_instance_uid = models.CharField(
+        max_length=64, default="", blank=True
+    )
+    series_instance_uid = models.CharField(
+        max_length=64, default="", blank=True
+    )
+    study_description = models.CharField(max_length=64, default="", blank=True)
+    series_description = models.CharField(
+        max_length=64, default="", blank=True
     )
 
     eye_choice = models.CharField(
@@ -271,6 +340,7 @@ class Image(UUIDModel):
         choices=STEREOSCOPIC_CHOICES,
         default=STEREOSCOPIC_EMPTY,
         null=True,
+        blank=True,
         help_text="Is this the left or right image of a stereoscopic pair?",
     )
     field_of_view = models.CharField(
@@ -278,6 +348,7 @@ class Image(UUIDModel):
         choices=FOV_CHOICES,
         default=FOV_EMPTY,
         null=True,
+        blank=True,
         help_text="What is the field of view of this image?",
     )
 
@@ -419,7 +490,7 @@ class Image(UUIDModel):
 
         # Check file size to guard for out of memory error
         if file_size > settings.MAX_SITK_FILE_SIZE:
-            raise IOError(
+            raise OSError(
                 f"File exceeds maximum file size. (Size: {file_size}, Max: {settings.MAX_SITK_FILE_SIZE})"
             )
 
@@ -466,6 +537,8 @@ class Image(UUIDModel):
             image from the results image set, and is used when the pre_clear
             signal is sent.
         """
+        from grandchallenge.archives.models import Archive
+
         if exclude_jobs is None:
             exclude_jobs = []
 
@@ -475,21 +548,28 @@ class Image(UUIDModel):
         reader_studies_groups = Q(
             editors_of_readerstudy__images__id__exact=self.pk
         ) | Q(readers_of_readerstudy__images__id__exact=self.pk)
-        archive_groups = (
-            Q(editors_of_archive__images__id__exact=self.pk)
-            | Q(uploaders_of_archive__images__id__exact=self.pk)
-            | Q(users_of_archive__images__id__exact=self.pk)
-        )
 
         expected_groups = {
-            *Group.objects.filter(
-                algorithm_jobs_groups | reader_studies_groups | archive_groups
-            ).distinct()
+            *Group.objects.filter(algorithm_jobs_groups),
+            *Group.objects.filter(reader_studies_groups),
         }
+
+        for archive in Archive.objects.filter(
+            items__values__image=self
+        ).select_related("editors_group", "uploaders_group", "users_group"):
+            expected_groups.update(
+                [
+                    archive.editors_group,
+                    archive.uploaders_group,
+                    archive.users_group,
+                ]
+            )
 
         # Reader study editors for reader studies that have answers that
         # include this image.
-        for answer in self.answer_set.all():
+        for answer in self.answer_set.select_related(
+            "question__reader_study__editors_group"
+        ).all():
             expected_groups.add(answer.question.reader_study.editors_group)
 
         current_groups = get_groups_with_perms(self, attach_perms=True)
@@ -521,9 +601,9 @@ class Image(UUIDModel):
 
 
 class ImageFile(UUIDModel):
-    IMAGE_TYPE_MHD = "MHD"
-    IMAGE_TYPE_TIFF = "TIFF"
-    IMAGE_TYPE_DZI = "DZI"
+    IMAGE_TYPE_MHD = ImageType.MHD.value
+    IMAGE_TYPE_TIFF = ImageType.TIFF.value
+    IMAGE_TYPE_DZI = ImageType.DZI.value
 
     IMAGE_TYPES = (
         (IMAGE_TYPE_MHD, "MHD"),
@@ -554,16 +634,20 @@ def delete_image_files(*_, instance: ImageFile, **__):
 
 
 class FolderUpload:
-    def __init__(self, image, folder):
-        self.image = image
+    def __init__(self, image_id, folder):
+        self.image_id = image_id
         self.folder = folder
+
+    def full_clean(self):
+        """Required as this is treated like a django model"""
+        pass
 
     def destination_filename(self, file_path):
         return (
             f"{settings.IMAGE_FILES_SUBDIRECTORY}/"
-            f"{str(self.image.pk)[0:2]}/"
-            f"{str(self.image.pk)[2:4]}/"
-            f"{self.image.pk}/"
+            f"{str(self.image_id)[0:2]}/"
+            f"{str(self.image_id)[2:4]}/"
+            f"{self.image_id}/"
             f"{file_path.parent.parent.stem}/"
             f"{file_path.parent.stem}/"
             f"{file_path.name}"

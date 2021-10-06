@@ -19,14 +19,14 @@ def user_profile_link(user: Union[AbstractUser, None]) -> str:
     if user:
         username = user.username
         profile_url = reverse(
-            "userena_profile_detail", kwargs={"username": user.username}
+            "profile-detail", kwargs={"username": user.username}
         )
         mugshot = format_html(
             (
-                '<img class="mugshot" loading="lazy" src="{0}" '
-                'alt="User Mugshot" '
+                '<img class="rounded-circle align-middle" loading="lazy" '
+                'src="{0}" alt="User Mugshot" '
                 # Match the "fa-lg" class style
-                'style="height: 1.33em; vertical-align: -25%;"/>'
+                'style="height: 1.33em;"/>'
             ),
             user.user_profile.get_mugshot_url(),
         )

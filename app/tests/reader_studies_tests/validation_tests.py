@@ -1,6 +1,6 @@
 import pytest
 
-from grandchallenge.core.validators import JSONSchemaValidator
+from grandchallenge.core.validators import JSONValidator
 from grandchallenge.reader_studies.models import (
     HANGING_LIST_SCHEMA,
     Question,
@@ -39,23 +39,25 @@ from tests.utils import get_view_for_user
         (
             [
                 {"main": "image_0", "secondary": "image_1"},
-                {"main": "image_2", "secondary": "image_3"},
+                {
+                    "main": "image_2",
+                    "secondary": "image_3",
+                    "tertiary": "image_4",
+                },
             ],
             True,
         ),
     ),
 )
 def test_hanging_list_validation(hanging_list, expected):
-    assert (
-        JSONSchemaValidator(schema=HANGING_LIST_SCHEMA)(hanging_list) is None
-    )
+    assert JSONValidator(schema=HANGING_LIST_SCHEMA)(hanging_list) is None
 
     rs = ReaderStudyFactory(hanging_list=hanging_list)
-    images = [ImageFactory(name=f"image_{n}") for n in range(4)]
+    images = [ImageFactory(name=f"image_{n}") for n in range(5)]
     rs.images.set(images)
     rs.save()
 
-    assert rs.images.all().count() == 4
+    assert rs.images.all().count() == 5
 
     assert rs.hanging_list_valid == expected
 
@@ -151,7 +153,22 @@ ANSWER_TYPE_NAMES_AND_ANSWERS = {
         "version": {"major": 1, "minor": 0},
         "type": "2D bounding box",
         "name": "test_name",
-        "corners": [[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 0, 0]],
+        "corners": [[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0]],
+        "probability": 0.2,
+    },
+    "M2DB": {
+        "type": "Multiple 2D bounding boxes",
+        "boxes": [
+            {
+                "name": "foo",
+                "corners": [[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0]],
+            },
+            {
+                "corners": [[0, 0, 0], [10, 0, 0], [10, 20, 0], [0, 20, 0]],
+                "probability": 0.2,
+            },
+        ],
+        "version": {"major": 1, "minor": 0},
     },
     "DIST": {
         "version": {"major": 1, "minor": 0},
@@ -159,19 +176,15 @@ ANSWER_TYPE_NAMES_AND_ANSWERS = {
         "name": "test_name",
         "start": [0, 0, 0],
         "end": [10, 0, 0],
+        "probability": 1.0,
     },
     "MDIS": {
         "version": {"major": 1, "minor": 0},
         "type": "Multiple distance measurements",
         "name": "test_name",
         "lines": [
-            {
-                "type": "object",
-                "name": "segment1",
-                "start": [0, 0, 0],
-                "end": [10, 0, 0],
-            },
-            {"start": [0, 0, 0], "end": [10, 0, 0]},
+            {"name": "segment1", "start": [0, 0, 0], "end": [10, 0, 0]},
+            {"start": [0, 0, 0], "end": [10, 0, 0], "probability": 0.5},
         ],
     },
     "POIN": {
@@ -179,12 +192,16 @@ ANSWER_TYPE_NAMES_AND_ANSWERS = {
         "type": "Point",
         "name": "test_name",
         "point": [0, 0, 0],
+        "probability": 0.41,
     },
     "MPOI": {
         "version": {"major": 1, "minor": 0},
         "type": "Multiple points",
         "name": "test_name",
-        "points": [{"point": [0, 0, 0]}],
+        "points": [
+            {"point": [0, 0, 0]},
+            {"point": [0, 0, 0], "probability": 0.2},
+        ],
     },
     "POLY": {
         "version": {"major": 1, "minor": 0},
@@ -194,6 +211,7 @@ ANSWER_TYPE_NAMES_AND_ANSWERS = {
         "path_points": [[0, 0, 0], [0, 0, 0]],
         "sub_type": "poly",
         "groups": ["a", "b"],
+        "probability": 0.3,
     },
     "MPOL": {
         "version": {"major": 1, "minor": 0},
@@ -206,7 +224,15 @@ ANSWER_TYPE_NAMES_AND_ANSWERS = {
                 "path_points": [[0, 0, 0], [0, 0, 0]],
                 "sub_type": "poly",
                 "groups": ["a", "b"],
-            }
+            },
+            {
+                "name": "test_name",
+                "seed_point": [0, 0, 0],
+                "path_points": [[0, 0, 0], [0, 0, 0]],
+                "sub_type": "poly",
+                "groups": ["a", "b"],
+                "probability": 0.54,
+            },
         ],
     },
 }
@@ -246,3 +272,31 @@ def test_new_answer_type_listed():
     q = Question(answer_type="TEST")
     with pytest.raises(RuntimeError):
         q.is_answer_valid(answer="foo")
+
+
+@pytest.mark.parametrize(
+    "answer_type,allow_null",
+    [
+        ["STXT", False],
+        ["MTXT", False],
+        ["BOOL", False],
+        ["NUMB", True],
+        ["2DBB", True],
+        ["M2DB", True],
+        ["DIST", True],
+        ["MDIS", True],
+        ["POIN", True],
+        ["MPOI", True],
+        ["POLY", True],
+        ["PIMG", True],
+        ["MPOL", True],
+        ["MPIM", True],
+        ["CHOI", True],
+        ["MCHO", False],
+        ["MCHD", False],
+        ["MASK", True],
+    ],
+)
+def test_answer_type_allows_null(answer_type, allow_null):
+    q = Question(answer_type=answer_type)
+    assert q.is_answer_valid(answer=None) == allow_null

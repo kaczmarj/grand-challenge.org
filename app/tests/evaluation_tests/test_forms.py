@@ -1,12 +1,13 @@
 import pytest
-from django.core.management import call_command
-from userena.models import UserenaSignup
 
 from grandchallenge.evaluation.forms import SubmissionForm
+from grandchallenge.evaluation.models import Phase
 from tests.algorithms_tests.factories import (
     AlgorithmFactory,
     AlgorithmImageFactory,
+    AlgorithmJobFactory,
 )
+from tests.evaluation_tests.factories import PhaseFactory
 from tests.factories import UserFactory
 from tests.verification_tests.factories import VerificationFactory
 
@@ -14,13 +15,19 @@ from tests.verification_tests.factories import VerificationFactory
 @pytest.mark.django_db
 class TestSubmissionForm:
     def test_setting_predictions_file(self):
-        form = SubmissionForm(user=UserFactory(), algorithm_submission=False)
+        form = SubmissionForm(
+            user=UserFactory(),
+            phase=PhaseFactory(submission_kind=Phase.SubmissionKind.CSV),
+        )
 
         assert "algorithm" not in form.fields
         assert "chunked_upload" in form.fields
 
     def test_setting_algorithm(self):
-        form = SubmissionForm(user=UserFactory(), algorithm_submission=True)
+        form = SubmissionForm(
+            user=UserFactory(),
+            phase=PhaseFactory(submission_kind=Phase.SubmissionKind.ALGORITHM),
+        )
 
         assert "algorithm" in form.fields
         assert "chunked_upload" not in form.fields
@@ -28,7 +35,7 @@ class TestSubmissionForm:
     def test_no_algorithm_selection(self):
         form = SubmissionForm(
             user=UserFactory(),
-            algorithm_submission=True,
+            phase=PhaseFactory(submission_kind=Phase.SubmissionKind.ALGORITHM),
             data={"algorithm": ""},
         )
 
@@ -39,7 +46,7 @@ class TestSubmissionForm:
 
         form = SubmissionForm(
             user=UserFactory(),
-            algorithm_submission=True,
+            phase=PhaseFactory(submission_kind=Phase.SubmissionKind.ALGORITHM),
             data={"algorithm": alg.pk},
         )
 
@@ -51,9 +58,13 @@ class TestSubmissionForm:
         user = UserFactory()
         alg = AlgorithmFactory()
         alg.add_editor(user=user)
+        alg.inputs.clear()
+        alg.outputs.clear()
 
         form = SubmissionForm(
-            user=user, algorithm_submission=True, data={"algorithm": alg.pk},
+            user=user,
+            phase=PhaseFactory(submission_kind=Phase.SubmissionKind.ALGORITHM),
+            data={"algorithm": alg.pk},
         )
 
         assert form.errors["algorithm"] == [
@@ -65,14 +76,21 @@ class TestSubmissionForm:
         user = UserFactory()
         alg = AlgorithmFactory()
         alg.add_editor(user=user)
-        AlgorithmImageFactory(ready=True, algorithm=alg)
+        alg.inputs.clear()
+        alg.outputs.clear()
+
+        ai = AlgorithmImageFactory(ready=True, algorithm=alg)
+        AlgorithmJobFactory(algorithm_image=ai, status=4)
+
+        p = PhaseFactory(submission_kind=Phase.SubmissionKind.ALGORITHM)
 
         form = SubmissionForm(
             user=user,
-            algorithm_submission=True,
-            data={"algorithm": alg.pk, "creator": user},
+            phase=p,
+            data={"algorithm": alg.pk, "creator": user, "phase": p},
         )
 
+        assert form.errors == {}
         assert "algorithm" not in form.errors
         assert form.is_valid()
 
@@ -80,7 +98,9 @@ class TestSubmissionForm:
         user = UserFactory()
 
         form = SubmissionForm(
-            user=user, creator_must_be_verified=True, data={"creator": user}
+            user=user,
+            phase=PhaseFactory(creator_must_be_verified=True),
+            data={"creator": user},
         )
 
         assert form.errors["creator"] == [
@@ -92,14 +112,62 @@ class TestSubmissionForm:
 
     @pytest.mark.parametrize("is_verified", (True, False))
     def test_user_with_verification(self, is_verified):
-        call_command("check_permissions")
-        user = UserenaSignup.objects.create_user(
-            "userena", "userena@google.com", "testpassword", active=True
-        )
+        user = UserFactory()
         VerificationFactory(user=user, is_verified=is_verified)
 
         form = SubmissionForm(
-            user=user, creator_must_be_verified=True, data={"creator": user}
+            user=user,
+            phase=PhaseFactory(creator_must_be_verified=True),
+            data={"creator": user},
         )
 
         assert bool("creator" in form.errors) is not is_verified
+
+
+@pytest.mark.django_db
+class TestSubmissionFormOptions:
+    def test_no_supplementary_url(self):
+        form = SubmissionForm(
+            user=UserFactory(),
+            phase=PhaseFactory(supplementary_url_choice=Phase.OFF),
+        )
+        assert "supplementary_url" not in form.fields
+
+    def test_supplementary_url_optional(self):
+        form = SubmissionForm(
+            user=UserFactory(),
+            phase=PhaseFactory(supplementary_url_choice=Phase.OPTIONAL),
+        )
+        assert "supplementary_url" in form.fields
+        assert form.fields["supplementary_url"].required is False
+
+    def test_supplementary_url_required(self):
+        form = SubmissionForm(
+            user=UserFactory(),
+            phase=PhaseFactory(supplementary_url_choice=Phase.REQUIRED),
+        )
+        assert "supplementary_url" in form.fields
+        assert form.fields["supplementary_url"].required is True
+
+    def test_supplementary_url_label(self):
+        form = SubmissionForm(
+            user=UserFactory(),
+            phase=PhaseFactory(
+                supplementary_url_choice=Phase.OPTIONAL,
+                supplementary_url_label="TEST",
+            ),
+        )
+        assert form.fields["supplementary_url"].label == "TEST"
+
+    def test_supplementary_url_help_text(self):
+        form = SubmissionForm(
+            user=UserFactory(),
+            phase=PhaseFactory(
+                supplementary_url_choice=Phase.OPTIONAL,
+                supplementary_url_help_text="<script>TEST</script>",
+            ),
+        )
+        assert (
+            form.fields["supplementary_url"].help_text
+            == "&lt;script&gt;TEST&lt;/script&gt;"
+        )

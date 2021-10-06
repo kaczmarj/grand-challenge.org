@@ -26,12 +26,17 @@
 
     <table class="table table-hover my-3">
         <tr>
+            <td class="font-weight-bold">Image context</td>
+            <td>{{ object.get_image_context_display }}</td>
+        </tr>
+        <tr>
             <td class="font-weight-bold">Window presets</td>
             <td>
                 {% for x in object.window_presets.all %}
-                    <div>{{ preset }}</div>
+                    <div>{{ x }}</div>
                 {% endfor %}
             </td>
+        <td>{{ object.get_window_preset_display }}</td>
         </tr>
         <tr>
             <td class="font-weight-bold">Default window preset</td>
@@ -54,6 +59,14 @@
             <td>{{ object.default_overlay_alpha }}</td>
         </tr>
         <tr>
+            <td class="font-weight-bold">Overlay lookup tables</td>
+            <td>
+                {% for x in object.overlay_luts.all %}
+                    <div>{{ x }}</div>
+                {% endfor %}
+            </td>
+        </tr>
+        <tr>
             <td class="font-weight-bold">Default overlay lookup table</td>
             <td>{{ object.default_overlay_lut }}</td>
         </tr>
@@ -63,11 +76,15 @@
         </tr>
         <tr>
             <td class="font-weight-bold">Overlay Segments</td>
-            <td><pre>{{ object.overlay_segments|json_dumps }}</pre></td>
+            <td>
+                <pre>{{ object.overlay_segments|json_dumps }}</pre>
+            </td>
         </tr>
         <tr>
             <td class="font-weight-bold">Key Bindings</td>
-            <td><pre>{{ object.key_bindings|json_dumps }}</pre></td>
+            <td>
+                <pre>{{ object.key_bindings|json_dumps }}</pre>
+            </td>
         </tr>
         <tr>
             <td class="font-weight-bold">Default zoom scale</td>
@@ -83,6 +100,24 @@
             <td class="font-weight-bold">Display plugin</td>
             <td>
                 <i class="fas {% if object.show_display_plugin %}fa-check-circle{% else %}fa-times-circle{% endif %}"></i>
+            </td>
+        </tr>
+        <tr>
+            <td class="font-weight-bold">Image switcher plugin</td>
+            <td>
+                <i class="fas {% if object.show_image_switcher_plugin %}fa-check-circle{% else %}fa-times-circle{% endif %}"></i>
+            </td>
+        </tr>
+        <tr>
+            <td class="font-weight-bold">Algorithm output plugin</td>
+            <td>
+                <i class="fas {% if object.show_algorithm_output_plugin %}fa-check-circle{% else %}fa-times-circle{% endif %}"></i>
+            </td>
+        </tr>
+        <tr>
+            <td class="font-weight-bold">Overlay plugin</td>
+            <td>
+                <i class="fas {% if object.show_overlay_plugin %}fa-check-circle{% else %}fa-times-circle{% endif %}"></i>
             </td>
         </tr>
         <tr>
@@ -107,6 +142,30 @@
             <td class="font-weight-bold">Reset tool</td>
             <td>
                 <i class="fas {% if object.show_reset_tool %}fa-check-circle{% else %}fa-times-circle{% endif %}"></i>
+            </td>
+        </tr>
+        <tr>
+            <td class="font-weight-bold">Overlay selection tool</td>
+            <td>
+                <i class="fas {% if object.show_overlay_selection_tool %}fa-check-circle{% else %}fa-times-circle{% endif %}"></i>
+            </td>
+        </tr>
+        <tr>
+            <td class="font-weight-bold">LUT selection tool</td>
+            <td>
+                <i class="fas {% if object.show_lut_selection_tool %}fa-check-circle{% else %}fa-times-circle{% endif %}"></i>
+            </td>
+        </tr>
+        <tr>
+            <td class="font-weight-bold">Enable contrast enhancement preprocessing (fundus)</td>
+            <td>
+                <i class="fas {% if object.enable_contrast_enhancement %}fa-check-circle{% else %}fa-times-circle{% endif %}"></i>
+            </td>
+        </tr>
+        <tr>
+            <td class="font-weight-bold">Jump to center of gravity of first output when viewing algorithm results</td>
+            <td>
+                <i class="fas {% if object.auto_jump_center_of_gravity %}fa-check-circle{% else %}fa-times-circle{% endif %}"></i>
             </td>
         </tr>
     </table>

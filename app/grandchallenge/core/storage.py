@@ -1,5 +1,7 @@
 import copy
 import datetime
+from base64 import b64decode
+from uuid import uuid4
 
 from botocore.signers import CloudFrontSigner
 from cryptography.hazmat.backends import default_backend
@@ -96,10 +98,13 @@ class ProtectedS3Storage(S3Storage):
 
     @property
     def _cloudfront_signer(self):
-        with open(settings.CLOUDFRONT_PRIVATE_KEY_PATH, "rb") as key_file:
-            private_key = serialization.load_pem_private_key(
-                key_file.read(), password=None, backend=default_backend()
-            )
+        key_bytes = b64decode(
+            settings.CLOUDFRONT_PRIVATE_KEY_BASE64.encode("ascii")
+        )
+
+        private_key = serialization.load_pem_private_key(
+            key_bytes, password=None, backend=default_backend()
+        )
 
         return CloudFrontSigner(
             settings.CLOUDFRONT_KEY_PAIR_ID,
@@ -130,9 +135,19 @@ def get_logo_path(instance, filename):
     return f"logos/{instance.__class__.__name__.lower()}/{instance.pk}/{get_valid_filename(filename)}"
 
 
+def get_pdf_path(instance, filename):
+    return f"pdfs/{instance.__class__.__name__.lower()}/{instance.pk}/{get_valid_filename(filename)}"
+
+
 def get_social_image_path(instance, filename):
     return f"social-images/{instance.__class__.__name__.lower()}/{instance.pk}/{get_valid_filename(filename)}"
 
 
 def get_banner_path(instance, filename):
     return f"b/{instance.pk}/{get_valid_filename(filename)}"
+
+
+def get_mugshot_path(instance, filename):
+    time_prefix = now().strftime("%Y/%m/%d")
+    extension = filename.split(".")[-1].lower()
+    return f"mugshots/{time_prefix}/{uuid4()}.{extension}"

@@ -4,20 +4,50 @@
 {% load pathlib %}
 
 {{ object.name }}
-<split/>
+<split></split>
 
 {{ object.created|naturaltime }}
-<split/>
+<split></split>
 
 {{ object.origin.creator|user_profile_link }}
-<split/>
+<split></split>
+
+{{ object.patient_id }}
+<split></split>
+
+{{ object.patient_name }}
+<split></split>
+
+{{ object.patient_birth_date }}
+<split></split>
+
+{{ object.patient_age }}
+<split></split>
+
+{{ object.get_patient_sex_display }}
+<split></split>
+
+{{ object.study_instance_uid }}
+<split></split>
+
+{{ object.study_description }}
+<split></split>
+
+{{ object.study_date }}
+<split></split>
+
+{{ object.series_instance_uid }}
+<split></split>
+
+{{ object.series_description }}
+<split></split>
 
 <a href="{% url 'workstations:workstation-session-create' slug=archive.workstation.slug %}?{% workstation_query image=object config=archive.workstation_config %}">
     <span class="badge badge-primary">
         <i class="fa fa-eye"></i> View Case
     </span>
 </a>
-<split/>
+<split></split>
 
 <ul class="list-unstyled mb-0">
     {% for civ in object.componentinterfacevalue_set.all %}
@@ -31,7 +61,7 @@
         {% endfor %}
     {% endfor %}
 </ul>
-<split/>
+<split></split>
 
 <ul class="list-unstyled mb-0">
     {% for file in object.files.all %}
@@ -44,4 +74,4 @@
         </li>
     {% endfor %}
 </ul>
-<split/>
+<split></split>

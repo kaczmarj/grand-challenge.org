@@ -17,32 +17,40 @@ class JSONEditorWidget(forms.Textarea):
     class Media:
         css = {
             "all": (
-                "https://cdnjs.cloudflare.com/ajax/libs/jsoneditor/5.25.0/jsoneditor.min.css",
+                "https://cdnjs.cloudflare.com/ajax/libs/jsoneditor/9.5.2/jsoneditor.min.css",
             )
         }
         js = (
-            "https://cdnjs.cloudflare.com/ajax/libs/jsoneditor/5.25.0/jsoneditor.min.js",
+            "https://cdnjs.cloudflare.com/ajax/libs/jsoneditor/9.5.2/jsoneditor.min.js",
         )
 
 
 class MarkdownEditorWidget(MarkdownxWidget):
-    class Media(MarkdownxWidget.Media):
-        js = [
-            *MarkdownxWidget.Media.js,
-            "vendor/js/markdown-toolbar-element/index.umd.js",
-        ]
+    @property
+    def media(self):
+        return forms.Media(
+            js=(
+                "js/markdownx.js",
+                "vendor/js/markdown-toolbar-element/index.umd.js",
+            )
+        )
 
 
 class MarkdownEditorAdminWidget(AdminMarkdownxWidget):
-    class Media(AdminMarkdownxWidget.Media):
-        css = {
-            "all": [
-                *AdminMarkdownxWidget.Media.css["all"],
-                "vendor/css/base.min.css",
-                "vendor/fa/css/all.css",
-            ]
-        }
-        js = [
-            *AdminMarkdownxWidget.Media.js,
-            "vendor/js/markdown-toolbar-element/index.umd.js",
-        ]
+    @property
+    def media(self):
+        return forms.Media(
+            css={
+                "all": [
+                    *AdminMarkdownxWidget.Media.css["all"],
+                    "vendor/css/base.min.css",
+                    "vendor/fa/css/all.css",
+                ]
+            },
+            js=[
+                "js/markdownx.js",
+                "vendor/js/markdown-toolbar-element/index.umd.js",
+                "vendor/js/jquery.min.js",
+                "vendor/js/bootstrap.bundle.min.js",
+            ],
+        )

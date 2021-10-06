@@ -1,127 +1,71 @@
-from django.contrib import messages
-from django.contrib.auth.mixins import UserPassesTestMixin
+from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Q
 from django.http import Http404
-from django.shortcuts import get_object_or_404, redirect, render
-from django.views.generic import DetailView
-from django.views.generic.edit import FormView
+from django.shortcuts import get_object_or_404, redirect
+from django.views.generic import DetailView, UpdateView
 from guardian.core import ObjectPermissionChecker
+from guardian.mixins import (
+    LoginRequiredMixin,
+    PermissionRequiredMixin as ObjectPermissionRequiredMixin,
+)
 from guardian.shortcuts import get_objects_for_user
-from rest_framework import viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.permissions import DjangoObjectPermissions
 from rest_framework.response import Response
-from userena import views as userena_views
+from rest_framework.viewsets import GenericViewSet
+from rest_framework_guardian.filters import ObjectPermissionsFilter
 
 from grandchallenge.algorithms.models import Algorithm, Job
 from grandchallenge.archives.models import Archive
 from grandchallenge.challenges.models import Challenge
-from grandchallenge.core.permissions.rest_framework import (
-    DjangoObjectOnlyPermissions,
-)
 from grandchallenge.evaluation.models import Submission
-from grandchallenge.profiles.filters import UserProfileObjectPermissionsFilter
-from grandchallenge.profiles.forms import EditProfileForm, PreSocialForm
+from grandchallenge.organizations.models import Organization
+from grandchallenge.profiles.forms import UserProfileForm
 from grandchallenge.profiles.models import UserProfile
 from grandchallenge.profiles.serializers import UserProfileSerializer
-from grandchallenge.profiles.utils import signin_redirect
 from grandchallenge.reader_studies.models import ReaderStudy
 from grandchallenge.subdomains.utils import reverse
-
-
-def login_redirect(request):
-    next_uri = request.GET.get("next")
-    redirect_uri = signin_redirect(redirect=next_uri, user=request.user)
-    return redirect(redirect_uri)
 
 
 def profile(request):
     """Redirect to the profile page of the currently signed in user."""
     if request.user.is_authenticated:
         url = reverse(
-            "userena_profile_detail",
-            kwargs={"username": request.user.username},
+            "profile-detail", kwargs={"username": request.user.username},
         )
     else:
-        url = reverse("profile_signin")
+        url = reverse("account_login")
 
     return redirect(url)
 
 
-def profile_edit_redirect(request):
-    """Redirect to the profile edit page of the currently signed in user."""
-    if request.user.is_authenticated:
-        messages.add_message(
-            request,
-            messages.INFO,
-            "Please fill-in the missing information in the form form below.",
-        )
-        url = reverse(
-            "userena_profile_edit", kwargs={"username": request.user.username}
-        )
-    else:
-        url = reverse("profile_signin")
-
-    return redirect(url)
-
-
-def profile_edit(*args, **kwargs):
-    kwargs["edit_profile_form"] = EditProfileForm
-    return userena_views.profile_edit(*args, **kwargs)
-
-
-def signup(request, extra_context=None, **kwargs):
-    success = reverse("profile_signup_complete")
-    response = userena_views.signup(
-        request=request,
-        extra_context=extra_context,
-        success_url=success,
-        **kwargs,
-    )
-    return response
-
-
-def signin(request, **kwargs):
-    redirect_signin_function = signin_redirect
-    response = userena_views.signin(
-        request=request,
-        redirect_signin_function=redirect_signin_function,
-        **kwargs,
-    )
-    return response
-
-
-def signup_complete(request):
-    response = render(request, "userena/signup_complete.html")
-    return response
-
-
-class UserProfileDetail(UserPassesTestMixin, DetailView):
-    template_name = "userena/profile_detail.html"
-    context_object_name = "profile"
-
-    def get_test_func(self):
-        profile = self.get_object()
-
-        def can_view_profile():
-            return profile.can_view_profile(self.request.user)
-
-        return can_view_profile
-
+class UserProfileObjectMixin:
     def get_object(self, queryset=None):
         try:
-            return UserProfile.objects.select_related(
-                "user__verification"
-            ).get(user__username__iexact=self.kwargs["username"])
+            return (
+                UserProfile.objects.select_related("user__verification")
+                .exclude(user__username__iexact=settings.ANONYMOUS_USER_NAME)
+                .get(user__username__iexact=self.kwargs["username"])
+            )
         except ObjectDoesNotExist:
             raise Http404("User not found.")
+
+
+class UserProfileDetail(UserProfileObjectMixin, DetailView):
+    model = UserProfile
+    context_object_name = "profile"
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
 
         profile_user = context["object"].user
         profile_groups = profile_user.groups.all()
+
+        organizations = Organization.objects.filter(
+            Q(members_group__in=profile_groups)
+            | Q(editors_group__in=profile_groups)
+        ).distinct()
 
         archives = (
             get_objects_for_user(
@@ -206,30 +150,34 @@ class UserProfileDetail(UserPassesTestMixin, DetailView):
                 "num_algorithms_run": Job.objects.filter(
                     creator=profile_user
                 ).count(),
+                "organizations": organizations,
             }
         )
 
         return context
 
 
-class PreSocialView(FormView):
-    form_class = PreSocialForm
-    template_name = "profiles/pre_social_form.html"
+class UserProfileUpdate(
+    LoginRequiredMixin,
+    ObjectPermissionRequiredMixin,
+    UserProfileObjectMixin,
+    UpdateView,
+):
+    model = UserProfile
+    form_class = UserProfileForm
+    context_object_name = "profile"
+    permission_required = "change_userprofile"
+    raise_exception = True
 
-    def get_success_url(self, *args, **kwargs):
-        return reverse("social:begin", args=["google-oauth2"])
 
-
-class UserProfileViewSet(viewsets.ReadOnlyModelViewSet):
+class UserProfileViewSet(GenericViewSet):
     serializer_class = UserProfileSerializer
-    permission_classes = (DjangoObjectOnlyPermissions,)
-    filter_backends = (UserProfileObjectPermissionsFilter,)
+    permission_classes = (DjangoObjectPermissions,)
+    filter_backends = (ObjectPermissionsFilter,)
     queryset = UserProfile.objects.all()
 
     @action(detail=False, methods=["get"])
     def self(self, request):
         obj = get_object_or_404(UserProfile, user=request.user)
-        if not request.user.has_perm("view_profile", obj):
-            raise PermissionDenied()
         serializer = self.get_serializer(instance=obj)
         return Response(serializer.data)

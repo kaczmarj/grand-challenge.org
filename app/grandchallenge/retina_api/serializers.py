@@ -1,3 +1,4 @@
+import base64
 from io import BytesIO
 
 import SimpleITK
@@ -11,28 +12,37 @@ from grandchallenge.patients.serializers import PatientSerializer
 from grandchallenge.studies.models import Study
 
 
-class PILImageSerializer(serializers.BaseSerializer):
+class B64ImageSerializer(serializers.Serializer):
     """
-    Read-only serializer that returns a PIL image from a Image instance.
+    Serializer that returns a b64 encoded image from an Image instance.
+
     If "width" and "height" are passed as extra serializer content, the
     PIL image will be resized to those dimensions.
-    If the image is 3D it will return the center slice of the image.
+
+    Subclasses PILImageSerializer, so the image may be resized and only the central
+    slice of a 3d image will be returned
     """
 
-    def to_representation(self, instance):
+    content = serializers.SerializerMethodField(read_only=True)
+
+    def get_content(self, obj):
         try:
-            image_itk = instance.get_sitk_image()
+            image_itk = obj.get_sitk_image()
         except Exception:
             raise Http404
+
         pil_image = self.convert_itk_to_pil(image_itk)
-        try:
-            pil_image.thumbnail(
-                (self.context["width"], self.context["height"]),
-                PILImage.ANTIALIAS,
-            )
-        except KeyError:
-            pass
-        return pil_image
+
+        if "width" in self.context and "height" in self.context:
+            new_dims = (self.context["width"], self.context["height"])
+            try:
+                pil_image.thumbnail(
+                    new_dims, PILImage.ANTIALIAS,
+                )
+            except ValueError:
+                pil_image = pil_image.resize(new_dims)
+
+        return self.create_thumbnail_as_b64(pil_image)
 
     @staticmethod
     def convert_itk_to_pil(image_itk):
@@ -43,23 +53,11 @@ class PILImageSerializer(serializers.BaseSerializer):
             image_nparray = image_nparray[depth // 2]
         return PILImage.fromarray(image_nparray)
 
-
-class BytesImageSerializer(PILImageSerializer):
-    """
-    Read-only serializer that returns a BytesIO image from an Image instance.
-    Subclasses PILImageSerializer, so the image may be resized and only the central
-    slice of a 3d image will be returned
-    """
-
-    def to_representation(self, instance):
-        image_pil = super().to_representation(instance)
-        return self.create_thumbnail_as_bytes_io(image_pil)
-
     @staticmethod
-    def create_thumbnail_as_bytes_io(image_pil):
+    def create_thumbnail_as_b64(image_pil):
         buffer = BytesIO()
         image_pil.save(buffer, format="png")
-        return buffer.getvalue()
+        return base64.b64encode(buffer.getvalue())
 
 
 class TreeObjectSerializer(serializers.Serializer):
@@ -85,24 +83,16 @@ class TreeImageSerializer(TreeObjectSerializer):
     eye_choice = serializers.CharField()
     modality = ImagingModalitySerializer()
     study = TreeStudySerializer(required=False)
-    archive_set = TreeArchiveSerializer(many=True)
     voxel_width_mm = serializers.FloatField()
     voxel_height_mm = serializers.FloatField()
     voxel_depth_mm = serializers.FloatField()
 
 
-class ImageLevelAnnotationsForImageSerializer(serializers.BaseSerializer):
-    quality = serializers.UUIDField(allow_null=True)
-    pathology = serializers.UUIDField(allow_null=True)
-    retina_pathology = serializers.UUIDField(allow_null=True)
-    oct_retina_pathology = serializers.UUIDField(allow_null=True)
-    text = serializers.UUIDField(allow_null=True)
-
-    def to_representation(self, instance):
-        return {
-            "quality": instance.get("quality"),
-            "pathology": instance.get("pathology"),
-            "retina_pathology": instance.get("retina_pathology"),
-            "oct_retina_pathology": instance.get("oct_retina_pathology"),
-            "text": instance.get("text"),
-        }
+class ImageLevelAnnotationsForImageSerializer(serializers.Serializer):
+    quality = serializers.UUIDField(allow_null=True, read_only=True)
+    pathology = serializers.UUIDField(allow_null=True, read_only=True)
+    retina_pathology = serializers.UUIDField(allow_null=True, read_only=True)
+    oct_retina_pathology = serializers.UUIDField(
+        allow_null=True, read_only=True
+    )
+    text = serializers.UUIDField(allow_null=True, read_only=True)

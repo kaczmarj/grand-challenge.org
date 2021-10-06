@@ -1,14 +1,12 @@
-from datetime import datetime, timedelta
-from typing import Dict
+from datetime import datetime
 
 from dateutil.relativedelta import relativedelta
 from django.contrib.messages.views import SuccessMessageMixin
 from django.contrib.postgres.aggregates import ArrayAgg
 from django.core.exceptions import ObjectDoesNotExist
-from django.core.files import File
 from django.db.models import Q
 from django.http import Http404
-from django.utils import timezone
+from django.shortcuts import get_object_or_404
 from django.utils.decorators import method_decorator
 from django.utils.functional import cached_property
 from django.utils.timezone import now
@@ -25,7 +23,6 @@ from guardian.mixins import (
     PermissionListMixin,
     PermissionRequiredMixin as ObjectPermissionRequiredMixin,
 )
-from ipware import get_client_ip
 
 from grandchallenge.datatables.views import Column, PaginatedTableListView
 from grandchallenge.evaluation.forms import (
@@ -58,7 +55,7 @@ class PhaseCreate(
     success_message = "Phase successfully created"
     permission_required = "change_challenge"
     raise_exception = True
-    login_url = reverse_lazy("userena_signin")
+    login_url = reverse_lazy("account_login")
 
     def get_permission_object(self):
         return self.request.challenge
@@ -83,7 +80,7 @@ class PhaseUpdate(
     success_message = "Configuration successfully updated"
     permission_required = "change_phase"
     raise_exception = True
-    login_url = reverse_lazy("userena_signin")
+    login_url = reverse_lazy("account_login")
 
     def get_object(self, queryset=None):
         return Phase.objects.get(
@@ -112,7 +109,7 @@ class MethodCreate(
     form_class = MethodForm
     permission_required = "change_challenge"
     raise_exception = True
-    login_url = reverse_lazy("userena_signin")
+    login_url = reverse_lazy("account_login")
 
     def get_permission_object(self):
         return self.request.challenge
@@ -136,7 +133,7 @@ class MethodCreate(
 class MethodList(LoginRequiredMixin, PermissionListMixin, ListView):
     model = Method
     permission_required = "view_method"
-    login_url = reverse_lazy("userena_signin")
+    login_url = reverse_lazy("account_login")
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -149,7 +146,7 @@ class MethodDetail(
     model = Method
     permission_required = "view_method"
     raise_exception = True
-    login_url = reverse_lazy("userena_signin")
+    login_url = reverse_lazy("account_login")
 
 
 class SubmissionCreateBase(SuccessMessageMixin, CreateView):
@@ -173,90 +170,23 @@ class SubmissionCreateBase(SuccessMessageMixin, CreateView):
 
     def get_form_kwargs(self):
         kwargs = super().get_form_kwargs()
-
-        kwargs.update(
-            {
-                "user": self.request.user,
-                "creator_must_be_verified": self.phase.creator_must_be_verified,
-                "display_comment_field": self.phase.allow_submission_comments,
-                "supplementary_file_choice": self.phase.supplementary_file_choice,
-                "supplementary_file_label": self.phase.supplementary_file_label,
-                "supplementary_file_help_text": self.phase.supplementary_file_help_text,
-                "publication_url_choice": self.phase.publication_url_choice,
-                "algorithm_submission": self.phase.submission_kind
-                == self.phase.SubmissionKind.ALGORITHM,
-            }
-        )
-
+        kwargs.update({"user": self.request.user, "phase": self.phase})
         return kwargs
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-
         context.update(
-            self.get_next_submission(
-                max_subs=self.phase.daily_submission_limit
-            )
+            {
+                **self.phase.get_next_submission(user=self.request.user),
+                "has_pending_evaluations": self.phase.has_pending_evaluations(
+                    user=self.request.user
+                ),
+                "phase": self.phase,
+            }
         )
-
-        pending_evaluations = Evaluation.objects.filter(
-            submission__phase__challenge=self.request.challenge,
-            submission__creator=self.request.user,
-            status__in=(Evaluation.PENDING, Evaluation.STARTED),
-        ).count()
-
-        context.update(
-            {"pending_evaluations": pending_evaluations, "phase": self.phase}
-        )
-
         return context
 
-    def get_next_submission(
-        self, *, max_subs: int, period: timedelta = None, now: datetime = None
-    ) -> Dict:
-        """
-        Determines the number of submissions left for the user in a given time
-        period, and when they can next submit.
-
-        :return: A dictionary containing remaining_submissions (int) and
-        next_submission_at (datetime)
-        """
-        if now is None:
-            now = timezone.now()
-
-        if period is None:
-            period = timedelta(days=1)
-
-        subs = (
-            Submission.objects.filter(
-                phase__challenge=self.request.challenge,
-                creator=self.request.user,
-                created__gte=now - period,
-            )
-            .exclude(evaluation__status=Evaluation.FAILURE)
-            .order_by("-created")
-            .distinct()
-        )
-
-        try:
-            next_sub_at = subs[max_subs - 1].created + period
-        except (IndexError, AssertionError):
-            next_sub_at = now
-
-        return {
-            "remaining_submissions": max_subs - len(subs),
-            "next_submission_at": next_sub_at,
-        }
-
     def form_valid(self, form):
-        client_ip, _ = get_client_ip(self.request)
-        form.instance.creators_ip = client_ip
-        form.instance.creators_user_agent = self.request.META.get(
-            "HTTP_USER_AGENT", ""
-        )
-
-        form.instance.phase = self.phase
-
         if "algorithm" in form.cleaned_data:
             # Algorithm submission
             form.instance.algorithm_image = form.cleaned_data[
@@ -265,10 +195,7 @@ class SubmissionCreateBase(SuccessMessageMixin, CreateView):
         else:
             # Predictions file submission
             uploaded_file = form.cleaned_data["chunked_upload"][0]
-            with uploaded_file.open() as f:
-                form.instance.predictions_file.save(
-                    uploaded_file.name, File(f)
-                )
+            form.instance.staged_predictions_file_uuid = uploaded_file.uuid
 
         return super().form_valid(form)
 
@@ -287,7 +214,7 @@ class SubmissionCreate(
     form_class = SubmissionForm
     permission_required = "create_phase_submission"
     raise_exception = True
-    login_url = reverse_lazy("userena_signin")
+    login_url = reverse_lazy("account_login")
 
     def get_permission_object(self):
         return self.phase
@@ -299,7 +226,7 @@ class LegacySubmissionCreate(
     form_class = LegacySubmissionForm
     permission_required = "change_challenge"
     raise_exception = True
-    login_url = reverse_lazy("userena_signin")
+    login_url = reverse_lazy("account_login")
 
     def get_permission_object(self):
         return self.request.challenge
@@ -313,7 +240,7 @@ class LegacySubmissionCreate(
 class SubmissionList(LoginRequiredMixin, PermissionListMixin, ListView):
     model = Submission
     permission_required = "view_submission"
-    login_url = reverse_lazy("userena_signin")
+    login_url = reverse_lazy("account_login")
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -334,7 +261,7 @@ class SubmissionDetail(
     model = Submission
     permission_required = "view_submission"
     raise_exception = True
-    login_url = reverse_lazy("userena_signin")
+    login_url = reverse_lazy("account_login")
 
 
 class TeamContextMixin:
@@ -366,7 +293,7 @@ class EvaluationList(
 ):
     model = Evaluation
     permission_required = "view_evaluation"
-    login_url = reverse_lazy("userena_signin")
+    login_url = reverse_lazy("account_login")
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -376,6 +303,7 @@ class EvaluationList(
             "submission__creator__user_profile",
             "submission__creator__verification",
             "submission__phase__challenge",
+            "submission__algorithm_image__algorithm",
         )
 
         if self.request.challenge.is_admin(self.request.user):
@@ -432,8 +360,10 @@ class LeaderboardDetail(
 
     @cached_property
     def phase(self):
-        return Phase.objects.get(
-            challenge=self.request.challenge, slug=self.kwargs["slug"]
+        return get_object_or_404(
+            klass=Phase,
+            challenge=self.request.challenge,
+            slug=self.kwargs["slug"],
         )
 
     @property
@@ -462,9 +392,18 @@ class LeaderboardDetail(
                     else "User",
                     sort_field="submission__creator__username",
                 ),
-                Column(title="Created", sort_field="created"),
             ]
         )
+
+        if self.phase.submission_kind == self.phase.SubmissionKind.ALGORITHM:
+            columns.append(
+                Column(
+                    title="Algorithm",
+                    sort_field="submission__algorithm_image__algorithm__title",
+                )
+            )
+
+        columns.append(Column(title="Created", sort_field="created"))
 
         if self.phase.scoring_method_choice == self.phase.MEAN:
             columns.append(Column(title="Mean Position", sort_field="rank"))
@@ -500,11 +439,11 @@ class LeaderboardDetail(
                 Column(title="Comment", sort_field="submission__comment")
             )
 
-        if self.phase.show_publication_url:
+        if self.phase.show_supplementary_url:
             columns.append(
                 Column(
-                    title="Publication",
-                    sort_field="submission__publication_url",
+                    title=self.phase.supplementary_url_label,
+                    sort_field="submission__supplementary_url",
                 )
             )
 
@@ -541,6 +480,7 @@ class LeaderboardDetail(
                 "submission__creator__user_profile",
                 "submission__creator__verification",
                 "submission__phase__challenge",
+                "submission__algorithm_image__algorithm",
             )
             .filter(
                 submission__phase=self.phase,
@@ -619,4 +559,4 @@ class EvaluationUpdate(
     success_message = "Result successfully updated."
     permission_required = "change_evaluation"
     raise_exception = True
-    login_url = reverse_lazy("userena_signin")
+    login_url = reverse_lazy("account_login")

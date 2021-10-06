@@ -3,9 +3,12 @@ import json
 from collections import Counter
 
 import numpy as np
+from actstream.actions import follow
+from actstream.models import Follow
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
+from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db import models
 from django.db.models import Avg, Count, OuterRef, Subquery, Sum
@@ -18,9 +21,11 @@ from jsonschema import RefResolutionError
 from numpy.random.mtrand import RandomState
 from simple_history.models import HistoricalRecords
 from sklearn.metrics import accuracy_score
+from stdimage import JPEGField
 
 from grandchallenge.anatomy.models import BodyStructure
 from grandchallenge.cases.models import Image
+from grandchallenge.components.schemas import ANSWER_TYPE_SCHEMA
 from grandchallenge.core.models import RequestBase, UUIDModel
 from grandchallenge.core.storage import (
     get_logo_path,
@@ -28,8 +33,9 @@ from grandchallenge.core.storage import (
     public_s3_storage,
 )
 from grandchallenge.core.templatetags.bleach import md2html
-from grandchallenge.core.validators import JSONSchemaValidator
+from grandchallenge.core.validators import JSONValidator
 from grandchallenge.modalities.models import ImagingModality
+from grandchallenge.notifications.models import Notification, NotificationType
 from grandchallenge.organizations.models import Organization
 from grandchallenge.publications.models import Publication
 from grandchallenge.subdomains.utils import reverse
@@ -85,9 +91,21 @@ The default hanging list presents each reader with 1 image per protocol.
 
 You are able to customise the hanging list in the study edit page.
 Here, you are able to assign multiple images and overlays to each protocol.
-A ``main`` and ``secondary`` image port are available.
-Overlays can be applied to either image port by using the keys ``main-overlay``
-and ``secondary-overlay``.
+
+Available image ports are:
+* ``main``
+* ``secondary``
+* ``tertiary``
+* ``quaternary``
+* ``quinary``
+* ``senary``
+* ``septenary``
+* ``octonary``
+* ``nonary``
+* ``denary``
+
+Overlays can be applied to the image ports by using the image-port name with
+the suffix '-overlay' (e.g. ``main-overlay``).
 
 Questions
 ---------
@@ -123,6 +141,24 @@ based on these scores: the average and total scores for each question as well
 as for each case are displayed in the ``statistics`` view.
 """
 
+
+class ImagePort(models.TextChoices):
+    MAIN = "M", "Main"
+    SECONDARY = "S", "Secondary"
+    TERTIARY = "TERTIARY", "Tertiary"
+    QUATERNARY = "QUATERNARY", "Quaternary"
+    QUINARY = "QUINARY", "Quinary"
+    SENARY = "SENARY", "Senary"
+    SEPTENARY = "SEPTENARY", "Septenary"
+    OCTONARY = "OCTONARY", "Octonary"
+    NONARY = "NONARY", "Nonary"
+    DENARY = "DENARY", "Denary"
+
+
+#: Supported image-port overlays.
+IMAGE_PORT_OVERLAYS = [f"{port.lower()}-overlay" for port in ImagePort.labels]
+
+#: Schema used to validate if the hanging list is of the correct format.
 HANGING_LIST_SCHEMA = {
     "definitions": {},
     "$schema": "http://json-schema.org/draft-06/schema#",
@@ -135,38 +171,16 @@ HANGING_LIST_SCHEMA = {
         "required": ["main"],
         "additionalProperties": False,
         "properties": {
-            "main": {
-                "$id": "#/items/properties/main",
+            port: {
+                "$id": f"#/items/properties/{port}",
                 "type": "string",
-                "title": "The Main Schema",
+                "title": f"The {port.title()} Schema",
                 "default": "",
-                "examples": ["im1.mhd"],
+                "examples": [f"im_{port}.mhd"],
                 "pattern": "^(.*)$",
-            },
-            "main-overlay": {
-                "$id": "#/items/properties/main-overlay",
-                "type": "string",
-                "title": "The Main Overlay Schema",
-                "default": "",
-                "examples": ["im1-overlay.mhd"],
-                "pattern": "^(.*)$",
-            },
-            "secondary": {
-                "$id": "#/items/properties/secondary",
-                "type": "string",
-                "title": "The Secondary Schema",
-                "default": "",
-                "examples": ["im2.mhd"],
-                "pattern": "^(.*)$",
-            },
-            "secondary-overlay": {
-                "$id": "#/items/properties/secondary-overlay",
-                "type": "string",
-                "title": "The Secondary Overlay Schema",
-                "default": "",
-                "examples": ["im2-overlay.mhd"],
-                "pattern": "^(.*)$",
-            },
+            }
+            for port in [p.lower() for p in ImagePort.labels]
+            + IMAGE_PORT_OVERLAYS
         },
     },
 }
@@ -188,13 +202,13 @@ class ReaderStudy(UUIDModel, TitleSlugDescriptionModel):
 
     editors_group = models.OneToOneField(
         Group,
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         editable=False,
         related_name="editors_of_readerstudy",
     )
     readers_group = models.OneToOneField(
         Group,
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         editable=False,
         related_name="readers_of_readerstudy",
     )
@@ -202,7 +216,7 @@ class ReaderStudy(UUIDModel, TitleSlugDescriptionModel):
         "cases.Image", related_name="readerstudies"
     )
     workstation = models.ForeignKey(
-        "workstations.Workstation", on_delete=models.CASCADE
+        "workstations.Workstation", on_delete=models.PROTECT
     )
     workstation_config = models.ForeignKey(
         "workstation_configs.WorkstationConfig",
@@ -219,14 +233,17 @@ class ReaderStudy(UUIDModel, TitleSlugDescriptionModel):
             "study's readers group in order to do that."
         ),
     )
-    logo = models.ImageField(
-        upload_to=get_logo_path, storage=public_s3_storage
+    logo = JPEGField(
+        upload_to=get_logo_path,
+        storage=public_s3_storage,
+        variations=settings.STDIMAGE_LOGO_VARIATIONS,
     )
-    social_image = models.ImageField(
+    social_image = JPEGField(
         upload_to=get_social_image_path,
         storage=public_s3_storage,
         blank=True,
-        help_text="An image for this reader study which is displayed when you post the link on social media. Should be square with a resolution of 640x320 px (1280x640 px for best display).",
+        help_text="An image for this reader study which is displayed when you post the link on social media. Should have a resolution of 640x320 px (1280x640 px for best display).",
+        variations=settings.STDIMAGE_SOCIAL_VARIATIONS,
     )
     help_text_markdown = models.TextField(blank=True)
 
@@ -235,7 +252,7 @@ class ReaderStudy(UUIDModel, TitleSlugDescriptionModel):
     hanging_list = models.JSONField(
         default=list,
         blank=True,
-        validators=[JSONSchemaValidator(schema=HANGING_LIST_SCHEMA)],
+        validators=[JSONValidator(schema=HANGING_LIST_SCHEMA)],
     )
     shuffle_hanging_list = models.BooleanField(default=False)
     is_educational = models.BooleanField(
@@ -250,7 +267,7 @@ class ReaderStudy(UUIDModel, TitleSlugDescriptionModel):
     case_text = models.JSONField(
         default=dict,
         blank=True,
-        validators=[JSONSchemaValidator(schema=CASE_TEXT_SCHEMA)],
+        validators=[JSONValidator(schema=CASE_TEXT_SCHEMA)],
     )
     allow_answer_modification = models.BooleanField(
         default=False,
@@ -433,6 +450,13 @@ class ReaderStudy(UUIDModel, TitleSlugDescriptionModel):
         self.assign_permissions()
         self.assign_workstation_permissions()
 
+    def delete(self):
+        ct = ContentType.objects.filter(
+            app_label=self._meta.app_label, model=self._meta.model_name
+        ).get()
+        Follow.objects.filter(object_id=self.pk, content_type=ct).delete()
+        super().delete()
+
     def is_editor(self, user):
         """Checks if ``user`` is an editor for this ``ReaderStudy``."""
         return user.groups.filter(pk=self.editors_group.pk).exists()
@@ -560,7 +584,7 @@ class ReaderStudy(UUIDModel, TitleSlugDescriptionModel):
         All questions for this ``ReaderStudy`` except those with answer type
         `heading`.
         """
-        return self.questions.exclude(answer_type=Question.ANSWER_TYPE_HEADING)
+        return self.questions.exclude(answer_type=Question.AnswerType.HEADING)
 
     @cached_property
     def answerable_question_count(self):
@@ -577,7 +601,7 @@ class ReaderStudy(UUIDModel, TitleSlugDescriptionModel):
                     continue
                 question = self.questions.get(question_text=key)
                 _answer = json.loads(gt[key])
-                if question.answer_type == Question.ANSWER_TYPE_CHOICE:
+                if question.answer_type == Question.AnswerType.CHOICE:
                     try:
                         option = question.options.get(title=_answer)
                         _answer = option.pk
@@ -586,8 +610,8 @@ class ReaderStudy(UUIDModel, TitleSlugDescriptionModel):
                             f"Option '{_answer}' is not valid for question {question.question_text}"
                         )
                 if question.answer_type in (
-                    Question.ANSWER_TYPE_MULTIPLE_CHOICE,
-                    Question.ANSWER_TYPE_MULTIPLE_CHOICE_DROPDOWN,
+                    Question.AnswerType.MULTIPLE_CHOICE,
+                    Question.AnswerType.MULTIPLE_CHOICE_DROPDOWN,
                 ):
                     _answer = list(
                         question.options.filter(title__in=_answer).values_list(
@@ -671,16 +695,17 @@ class ReaderStudy(UUIDModel, TitleSlugDescriptionModel):
 
         hanging_list_count = len(self.hanging_list)
 
-        if self.answerable_question_count == 0 or hanging_list_count == 0:
-            return {"questions": 0.0, "hangings": 0.0, "diff": 0.0}
-
         expected = hanging_list_count * self.answerable_question_count
+
         answers = Answer.objects.filter(
             question__in=self.answerable_questions,
             creator_id=user.id,
             is_ground_truth=False,
         ).distinct()
         answer_count = answers.count()
+
+        if expected == 0 or answer_count == 0:
+            return {"questions": 0.0, "hangings": 0.0, "diff": 0.0}
 
         # Group the answers by images and filter out the images that
         # have an inadequate amount of answers
@@ -780,18 +805,54 @@ class ReaderStudy(UUIDModel, TitleSlugDescriptionModel):
             .order_by("score__avg")
         )
 
+        options = {}
+        for option in CategoricalOption.objects.filter(
+            question__reader_study=self
+        ).values("id", "title", "question"):
+            qt = option["question"]
+            options[qt] = options.get(qt, {})
+            options[qt].update({option["id"]: option["title"]})
+
         ground_truths = {}
-        questions = set()
-        for gt in Answer.objects.filter(
-            question__reader_study=self, is_ground_truth=True
-        ).values("images__name", "answer", "question__question_text"):
+        questions = []
+        for gt in (
+            Answer.objects.filter(
+                question__reader_study=self, is_ground_truth=True
+            )
+            .values(
+                "images__name",
+                "answer",
+                "question",
+                "question__question_text",
+                "question__answer_type",
+            )
+            .order_by("question__order", "question__created")
+        ):
+            questions.append(gt["question__question_text"])
+
             ground_truths[gt["images__name"]] = ground_truths.get(
                 gt["images__name"], {}
             )
+
+            if gt["question__answer_type"] in [
+                Question.AnswerType.MULTIPLE_CHOICE,
+                Question.AnswerType.MULTIPLE_CHOICE_DROPDOWN,
+            ]:
+                human_readable_answers = [
+                    options[gt["question"]].get(a, a) for a in gt["answer"]
+                ]
+                human_readable_answers.sort()
+                human_readable_answer = ", ".join(human_readable_answers)
+            else:
+                human_readable_answer = options.get(gt["question"], {}).get(
+                    gt["answer"], gt["answer"]
+                )
+
             ground_truths[gt["images__name"]][
                 gt["question__question_text"]
-            ] = gt["answer"]
-            questions.add(gt["question__question_text"])
+            ] = human_readable_answer
+
+        questions = list(dict.fromkeys(questions))
 
         return {
             "max_score_questions": float(len(self.hanging_list))
@@ -824,387 +885,76 @@ def delete_reader_study_groups_hook(*_, instance: ReaderStudy, using, **__):
         pass
 
 
-#: Schema used to validate if answers are of the correct type and format.
-ANSWER_TYPE_SCHEMA = {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "definitions": {
-        "null": {"type": "null"},
-        "STXT": {"type": "string"},
-        "MTXT": {"type": "string"},
-        "BOOL": {"type": "boolean"},
-        "NUMB": {"type": "number"},
-        "HEAD": {"type": "null"},
-        "CHOI": {"type": "number"},
-        "MCHO": {"type": "array", "items": {"type": "number"}},
-        "MCHD": {"type": "array", "items": {"type": "number"}},
-        "2DBB": {
-            "type": "object",
-            "properties": {
-                "type": {"enum": ["2D bounding box"]},
-                "corners": {
-                    "type": "array",
-                    "items": {
-                        "type": "array",
-                        "items": {"type": "number"},
-                        "minItems": 3,
-                        "maxItems": 3,
-                    },
-                    "minItems": 4,
-                    "maxItems": 4,
-                },
-                "name": {"type": "string"},
-            },
-            "required": ["version", "type", "corners"],
-        },
-        "line-object": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "start": {
-                    "type": "array",
-                    "items": {"type": "number"},
-                    "minItems": 3,
-                    "maxItems": 3,
-                },
-                "end": {
-                    "type": "array",
-                    "items": {"type": "number"},
-                    "minItems": 3,
-                    "maxItems": 3,
-                },
-            },
-            "required": ["start", "end"],
-        },
-        "point-object": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "point": {
-                    "type": "array",
-                    "items": {"type": "number"},
-                    "minItems": 3,
-                    "maxItems": 3,
-                },
-            },
-            "required": ["point"],
-        },
-        "polygon-object": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "seed_point": {
-                    "type": "array",
-                    "items": {"type": "number"},
-                    "minItems": 3,
-                    "maxItems": 3,
-                },
-                "path_points": {
-                    "type": "array",
-                    "items": {
-                        "type": "array",
-                        "items": {"type": "number"},
-                        "minItems": 3,
-                        "maxItems": 3,
-                    },
-                },
-                "sub_type": {"type": "string"},
-                "groups": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": [
-                "name",
-                "seed_point",
-                "path_points",
-                "sub_type",
-                "groups",
-            ],
-        },
-        "DIST": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "type": {"enum": ["Distance measurement"]},
-                "start": {
-                    "type": "array",
-                    "items": {"type": "number"},
-                    "minItems": 3,
-                    "maxItems": 3,
-                },
-                "end": {
-                    "type": "array",
-                    "items": {"type": "number"},
-                    "minItems": 3,
-                    "maxItems": 3,
-                },
-            },
-            "required": ["version", "type", "start", "end"],
-        },
-        "MDIS": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "type": {"enum": ["Multiple distance measurements"]},
-                "lines": {
-                    "type": "array",
-                    "items": {
-                        "allOf": [{"$ref": "#/definitions/line-object"}]
-                    },
-                },
-            },
-            "required": ["version", "type", "lines"],
-        },
-        "POIN": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "type": {"enum": ["Point"]},
-                "point": {
-                    "type": "array",
-                    "items": {"type": "number"},
-                    "minItems": 3,
-                    "maxItems": 3,
-                },
-            },
-            "required": ["version", "type", "point"],
-        },
-        "MPOI": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "type": {"enum": ["Multiple points"]},
-                "points": {
-                    "type": "array",
-                    "items": {
-                        "allOf": [{"$ref": "#/definitions/point-object"}]
-                    },
-                },
-            },
-            "required": ["version", "type", "points"],
-        },
-        "POLY": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "seed_point": {
-                    "type": "array",
-                    "items": {"type": "number"},
-                    "minItems": 3,
-                    "maxItems": 3,
-                },
-                "path_points": {
-                    "type": "array",
-                    "items": {
-                        "type": "array",
-                        "items": {"type": "number"},
-                        "minItems": 3,
-                        "maxItems": 3,
-                    },
-                },
-                "sub_type": {"type": "string"},
-                "groups": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": [
-                "name",
-                "seed_point",
-                "path_points",
-                "sub_type",
-                "groups",
-                "version",
-            ],
-        },
-        "PIMG": {
-            "type": "object",
-            "properties": {
-                "upload_session_pk": {"type": "string", "format": "uuid"}
-            },
-            "required": ["upload_session_pk"],
-        },
-        "MPOL": {
-            "type": "object",
-            "properties": {
-                "type": {"enum": ["Multiple polygons"]},
-                "name": {"type": "string"},
-                "polygons": {
-                    "type": "array",
-                    "items": {"$ref": "#/definitions/polygon-object"},
-                },
-            },
-            "required": ["type", "version", "polygons"],
-        },
-        "MPIM": {
-            "type": "object",
-            "properties": {
-                "upload_session_pk": {"type": "string", "format": "uuid"}
-            },
-            "required": ["upload_session_pk"],
-        },
-        "2D-bounding-box-object": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "corners": {
-                    "type": "array",
-                    "items": {
-                        "type": "array",
-                        "items": {"type": "number"},
-                        "minItems": 3,
-                        "maxItems": 3,
-                    },
-                    "minItems": 4,
-                    "maxItems": 4,
-                },
-            },
-            "required": ["corners"],
-        },
-        "M2DB": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "type": {"enum": ["Multiple 2D bounding boxes"]},
-                "boxes": {
-                    "type": "array",
-                    "items": {
-                        "allOf": [
-                            {"$ref": "#/definitions/2D-bounding-box-object"}
-                        ]
-                    },
-                },
-            },
-            "required": ["version", "type", "boxes"],
-        },
-    },
-    "properties": {
-        "version": {
-            "type": "object",
-            "additionalProperties": {"type": "number"},
-            "required": ["major", "minor"],
-        }
-    },
-    # anyOf should exist, check Question.is_answer_valid
-    "anyOf": [
-        {"$ref": "#/definitions/null"},
-        {"$ref": "#/definitions/STXT"},
-        {"$ref": "#/definitions/MTXT"},
-        {"$ref": "#/definitions/BOOL"},
-        {"$ref": "#/definitions/NUMB"},
-        {"$ref": "#/definitions/HEAD"},
-        {"$ref": "#/definitions/2DBB"},
-        {"$ref": "#/definitions/DIST"},
-        {"$ref": "#/definitions/MDIS"},
-        {"$ref": "#/definitions/POIN"},
-        {"$ref": "#/definitions/MPOI"},
-        {"$ref": "#/definitions/POLY"},
-        {"$ref": "#/definitions/PIMG"},
-        {"$ref": "#/definitions/MPOL"},
-        {"$ref": "#/definitions/MPIM"},
-        {"$ref": "#/definitions/CHOI"},
-        {"$ref": "#/definitions/MCHO"},
-        {"$ref": "#/definitions/MCHD"},
-        {"$ref": "#/definitions/M2DB"},
-    ],
-}
-
-
 class Question(UUIDModel):
-    ANSWER_TYPE_SINGLE_LINE_TEXT = "STXT"
-    ANSWER_TYPE_MULTI_LINE_TEXT = "MTXT"
-    ANSWER_TYPE_BOOL = "BOOL"
-    ANSWER_TYPE_NUMBER = "NUMB"
-    ANSWER_TYPE_HEADING = "HEAD"
-    ANSWER_TYPE_2D_BOUNDING_BOX = "2DBB"
-    ANSWER_TYPE_MULTIPLE_2D_BOUNDING_BOXES = "M2DB"
-    ANSWER_TYPE_DISTANCE_MEASUREMENT = "DIST"
-    ANSWER_TYPE_MULTIPLE_DISTANCE_MEASUREMENTS = "MDIS"
-    ANSWER_TYPE_POINT = "POIN"
-    ANSWER_TYPE_MULTIPLE_POINTS = "MPOI"
-    ANSWER_TYPE_POLYGON = "POLY"
-    ANSWER_TYPE_POLYGON_IMAGE = "PIMG"
-    ANSWER_TYPE_MULTIPLE_POLYGONS = "MPOL"
-    ANSWER_TYPE_MULTIPLE_POLYGONS_IMAGE = "MPIM"
-    ANSWER_TYPE_CHOICE = "CHOI"
-    ANSWER_TYPE_MULTIPLE_CHOICE = "MCHO"
-    ANSWER_TYPE_MULTIPLE_CHOICE_DROPDOWN = "MCHD"
-    # WARNING: Do not change the display text, these are used in the front end
-    ANSWER_TYPE_CHOICES = (
-        (ANSWER_TYPE_SINGLE_LINE_TEXT, "Single line text"),
-        (ANSWER_TYPE_MULTI_LINE_TEXT, "Multi line text"),
-        (ANSWER_TYPE_BOOL, "Bool"),
-        (ANSWER_TYPE_NUMBER, "Number"),
-        (ANSWER_TYPE_HEADING, "Heading"),
-        (ANSWER_TYPE_2D_BOUNDING_BOX, "2D bounding box"),
-        (ANSWER_TYPE_MULTIPLE_2D_BOUNDING_BOXES, "Multiple 2D bounding boxes"),
-        (ANSWER_TYPE_DISTANCE_MEASUREMENT, "Distance measurement"),
-        (
-            ANSWER_TYPE_MULTIPLE_DISTANCE_MEASUREMENTS,
+    class AnswerType(models.TextChoices):
+        # WARNING: Do not change the display text, these are used in the front end
+        SINGLE_LINE_TEXT = "STXT", "Single line text"
+        MULTI_LINE_TEXT = "MTXT", "Multi line text"
+        BOOL = "BOOL", "Bool"
+        NUMBER = "NUMB", "Number"
+        HEADING = "HEAD", "Heading"
+        BOUNDING_BOX_2D = "2DBB", "2D bounding box"
+        MULTIPLE_2D_BOUNDING_BOXES = "M2DB", "Multiple 2D bounding boxes"
+        DISTANCE_MEASUREMENT = "DIST", "Distance measurement"
+        MULTIPLE_DISTANCE_MEASUREMENTS = (
+            "MDIS",
             "Multiple distance measurements",
-        ),
-        (ANSWER_TYPE_POINT, "Point"),
-        (ANSWER_TYPE_MULTIPLE_POINTS, "Multiple points"),
-        (ANSWER_TYPE_POLYGON, "Polygon"),
-        (ANSWER_TYPE_POLYGON_IMAGE, "Polygon (saved as mask)"),
-        (ANSWER_TYPE_MULTIPLE_POLYGONS, "Multiple polygons"),
-        (
-            ANSWER_TYPE_MULTIPLE_POLYGONS_IMAGE,
-            "Multiple polygons (saved as mask)",
-        ),
-        (ANSWER_TYPE_CHOICE, "Choice"),
-        (ANSWER_TYPE_MULTIPLE_CHOICE, "Multiple choice"),
-        (ANSWER_TYPE_MULTIPLE_CHOICE_DROPDOWN, "Multiple choice dropdown"),
-    )
+        )
+        POINT = "POIN", "Point"
+        MULTIPLE_POINTS = "MPOI", "Multiple points"
+        POLYGON = "POLY", "Polygon"
+        POLYGON_IMAGE = "PIMG", "Polygon (saved as mask)"
+        MULTIPLE_POLYGONS = "MPOL", "Multiple polygons"
+        MULTIPLE_POLYGONS_IMAGE = "MPIM", "Multiple polygons (saved as mask)"
+        CHOICE = "CHOI", "Choice"
+        MULTIPLE_CHOICE = "MCHO", "Multiple choice"
+        MULTIPLE_CHOICE_DROPDOWN = "MCHD", "Multiple choice dropdown"
+        MASK = "MASK", "Mask"
 
     # What is the orientation of the question form when presented on the
     # front end?
-    DIRECTION_HORIZONTAL = "H"
-    DIRECTION_VERTICAL = "V"
-    DIRECTION_CHOICES = (
-        (DIRECTION_HORIZONTAL, "Horizontal"),
-        (DIRECTION_VERTICAL, "Vertical"),
-    )
+    class Direction(models.TextChoices):
+        HORIZONTAL = "H", "Horizontal"
+        VERTICAL = "V", "Vertical"
 
-    # What image port should be used for a drawn annotation?
-    IMAGE_PORT_MAIN = "M"
-    IMAGE_PORT_SECONDARY = "S"
-    IMAGE_PORT_CHOICES = (
-        (IMAGE_PORT_MAIN, "Main"),
-        (IMAGE_PORT_SECONDARY, "Secondary"),
-    )
-
-    SCORING_FUNCTION_ACCURACY = "ACC"
-    SCORING_FUNCTION_CHOICES = ((SCORING_FUNCTION_ACCURACY, "Accuracy score"),)
+    class ScoringFunction(models.TextChoices):
+        ACCURACY = "ACC", "Accuracy score"
 
     SCORING_FUNCTIONS = {
-        SCORING_FUNCTION_ACCURACY: accuracy_score,
+        ScoringFunction.ACCURACY: accuracy_score,
     }
 
     EXAMPLE_FOR_ANSWER_TYPE = {
-        ANSWER_TYPE_SINGLE_LINE_TEXT: "'\"answer\"'",
-        ANSWER_TYPE_MULTI_LINE_TEXT: "'\"answer\\nanswer\\nanswer\"'",
-        ANSWER_TYPE_BOOL: "'true'",
-        ANSWER_TYPE_CHOICE: "'\"option\"'",
-        ANSWER_TYPE_MULTIPLE_CHOICE: '\'["option1", "option2"]\'',
-        ANSWER_TYPE_MULTIPLE_CHOICE_DROPDOWN: '\'["option1", "option2"]\'',
+        AnswerType.SINGLE_LINE_TEXT: "'\"answer\"'",
+        AnswerType.MULTI_LINE_TEXT: "'\"answer\\nanswer\\nanswer\"'",
+        AnswerType.BOOL: "'true'",
+        AnswerType.CHOICE: "'\"option\"'",
+        AnswerType.MULTIPLE_CHOICE: '\'["option1", "option2"]\'',
+        AnswerType.MULTIPLE_CHOICE_DROPDOWN: '\'["option1", "option2"]\'',
     }
 
     reader_study = models.ForeignKey(
-        ReaderStudy, on_delete=models.CASCADE, related_name="questions"
+        ReaderStudy, on_delete=models.PROTECT, related_name="questions"
     )
     question_text = models.TextField()
     help_text = models.TextField(blank=True)
     answer_type = models.CharField(
         max_length=4,
-        choices=ANSWER_TYPE_CHOICES,
-        default=ANSWER_TYPE_SINGLE_LINE_TEXT,
+        choices=AnswerType.choices,
+        default=AnswerType.SINGLE_LINE_TEXT,
     )
+    # Set blank because the requirement is dependent on answer_type and handled in the front end
     image_port = models.CharField(
-        max_length=1, choices=IMAGE_PORT_CHOICES, blank=True, default=""
+        max_length=10, choices=ImagePort.choices, blank=True, default=""
     )
     required = models.BooleanField(default=True)
     direction = models.CharField(
-        max_length=1, choices=DIRECTION_CHOICES, default=DIRECTION_HORIZONTAL
+        max_length=1, choices=Direction.choices, default=Direction.HORIZONTAL
     )
     scoring_function = models.CharField(
         max_length=3,
-        choices=SCORING_FUNCTION_CHOICES,
-        default=SCORING_FUNCTION_ACCURACY,
+        choices=ScoringFunction.choices,
+        default=ScoringFunction.ACCURACY,
     )
     order = models.PositiveSmallIntegerField(default=100)
 
@@ -1268,8 +1018,8 @@ class Question(UUIDModel):
         to ``answer`` and ``ground_truth``.
         """
         if self.answer_type in (
-            self.ANSWER_TYPE_MULTIPLE_CHOICE,
-            self.ANSWER_TYPE_MULTIPLE_CHOICE_DROPDOWN,
+            Question.AnswerType.MULTIPLE_CHOICE,
+            Question.AnswerType.MULTIPLE_CHOICE_DROPDOWN,
         ):
             if len(answer) == 0 and len(ground_truth) == 0:
                 return 1.0
@@ -1316,8 +1066,7 @@ class Question(UUIDModel):
             )
 
         if (
-            self.answer_type
-            in [self.ANSWER_TYPE_BOOL, self.ANSWER_TYPE_HEADING]
+            self.answer_type in [self.AnswerType.BOOL, self.AnswerType.HEADING]
             and self.required
         ):
             raise ValidationError(
@@ -1328,16 +1077,25 @@ class Question(UUIDModel):
     @property
     def annotation_types(self):
         return [
-            self.ANSWER_TYPE_2D_BOUNDING_BOX,
-            self.ANSWER_TYPE_MULTIPLE_2D_BOUNDING_BOXES,
-            self.ANSWER_TYPE_DISTANCE_MEASUREMENT,
-            self.ANSWER_TYPE_MULTIPLE_DISTANCE_MEASUREMENTS,
-            self.ANSWER_TYPE_POINT,
-            self.ANSWER_TYPE_MULTIPLE_POINTS,
-            self.ANSWER_TYPE_POLYGON,
-            self.ANSWER_TYPE_POLYGON_IMAGE,
-            self.ANSWER_TYPE_MULTIPLE_POLYGONS,
-            self.ANSWER_TYPE_MULTIPLE_POLYGONS_IMAGE,
+            self.AnswerType.BOUNDING_BOX_2D,
+            self.AnswerType.MULTIPLE_2D_BOUNDING_BOXES,
+            self.AnswerType.DISTANCE_MEASUREMENT,
+            self.AnswerType.MULTIPLE_DISTANCE_MEASUREMENTS,
+            self.AnswerType.POINT,
+            self.AnswerType.MULTIPLE_POINTS,
+            self.AnswerType.POLYGON,
+            self.AnswerType.POLYGON_IMAGE,
+            self.AnswerType.MULTIPLE_POLYGONS,
+            self.AnswerType.MULTIPLE_POLYGONS_IMAGE,
+            self.AnswerType.MASK,
+        ]
+
+    @property
+    def allow_null_types(self):
+        return [
+            *self.annotation_types,
+            self.AnswerType.CHOICE,
+            self.AnswerType.NUMBER,
         ]
 
     def is_answer_valid(self, *, answer):
@@ -1346,13 +1104,12 @@ class Question(UUIDModel):
             {"$ref": f"#/definitions/{self.answer_type}"},
         ]
 
-        allow_null = self.answer_type in self.annotation_types
-        if allow_null:
+        if self.answer_type in self.allow_null_types:
             allowed_types.append({"$ref": "#/definitions/null"})
 
         try:
             return (
-                JSONSchemaValidator(
+                JSONValidator(
                     schema={**ANSWER_TYPE_SCHEMA, "anyOf": allowed_types}
                 )(answer)
                 is None
@@ -1364,6 +1121,17 @@ class Question(UUIDModel):
                 f"#/definitions/{self.answer_type} needs to be defined in "
                 "ANSWER_TYPE_SCHEMA."
             )
+
+    @property
+    def is_image_type(self):
+        return self.answer_type in [
+            self.AnswerType.POLYGON_IMAGE,
+            self.AnswerType.MULTIPLE_POLYGONS_IMAGE,
+            self.AnswerType.MASK,
+        ]
+
+    def get_absolute_url(self):
+        return self.reader_study.get_absolute_url() + "#questions"
 
 
 class CategoricalOption(models.Model):
@@ -1383,14 +1151,14 @@ class Answer(UUIDModel):
     ``ReaderStudy``.
     """
 
-    creator = models.ForeignKey(get_user_model(), on_delete=models.CASCADE)
-    question = models.ForeignKey(Question, on_delete=models.CASCADE)
+    creator = models.ForeignKey(get_user_model(), on_delete=models.PROTECT)
+    question = models.ForeignKey(Question, on_delete=models.PROTECT)
     images = models.ManyToManyField("cases.Image", related_name="answers")
     answer = models.JSONField(
-        null=True, validators=[JSONSchemaValidator(schema=ANSWER_TYPE_SCHEMA)],
+        null=True, validators=[JSONValidator(schema=ANSWER_TYPE_SCHEMA)],
     )
     answer_image = models.ForeignKey(
-        "cases.Image", null=True, on_delete=models.SET_NULL
+        "cases.Image", null=True, on_delete=models.PROTECT
     )
     is_ground_truth = models.BooleanField(default=False)
     score = models.FloatField(null=True)
@@ -1467,7 +1235,7 @@ class Answer(UUIDModel):
         instance=None,
     ):
         """Validates all fields provided for ``answer``."""
-        if question.answer_type == question.ANSWER_TYPE_HEADING:
+        if question.answer_type == Question.AnswerType.HEADING:
             # Maintained for historical consistency
             raise ValidationError("Headings are not answerable.")
 
@@ -1511,27 +1279,36 @@ class Answer(UUIDModel):
         if not creator.has_perm("read_readerstudy", question.reader_study):
             raise ValidationError("This user is not a reader for this study.")
 
-        if (
-            question.answer_type == Question.ANSWER_TYPE_CHOICE
-            and answer not in question.options.values_list("id", flat=True)
-        ):
-            raise ValidationError(
-                "Provided option is not valid for this question"
-            )
+        valid_options = question.options.values_list("id", flat=True)
+        if question.answer_type == Question.AnswerType.CHOICE:
+            if not question.required:
+                valid_options = (*valid_options, None)
+            if answer not in valid_options:
+                raise ValidationError(
+                    "Provided option is not valid for this question"
+                )
 
         if question.answer_type in (
-            Question.ANSWER_TYPE_MULTIPLE_CHOICE,
-            Question.ANSWER_TYPE_MULTIPLE_CHOICE_DROPDOWN,
+            Question.AnswerType.MULTIPLE_CHOICE,
+            Question.AnswerType.MULTIPLE_CHOICE_DROPDOWN,
         ):
-            options = question.options.values_list("id", flat=True)
-            if not all(x in options for x in answer):
+            if not all(x in valid_options for x in answer):
                 raise ValidationError(
                     "Provided options are not valid for this question"
                 )
 
+        if (
+            question.answer_type == Question.AnswerType.NUMBER
+            and question.required
+            and answer is None
+        ):
+            raise ValidationError(
+                "Answer for required question cannot be None"
+            )
+
     @property
     def answer_text(self):
-        if self.question.answer_type == Question.ANSWER_TYPE_CHOICE:
+        if self.question.answer_type == Question.AnswerType.CHOICE:
             return (
                 self.question.options.filter(pk=self.answer)
                 .values_list("title", flat=True)
@@ -1539,13 +1316,13 @@ class Answer(UUIDModel):
                 or ""
             )
         if self.question.answer_type in (
-            Question.ANSWER_TYPE_MULTIPLE_CHOICE,
-            Question.ANSWER_TYPE_MULTIPLE_CHOICE_DROPDOWN,
+            Question.AnswerType.MULTIPLE_CHOICE,
+            Question.AnswerType.MULTIPLE_CHOICE_DROPDOWN,
         ):
             return ", ".join(
-                self.question.options.filter(pk__in=self.answer).values_list(
-                    "title", flat=True
-                )
+                self.question.options.filter(pk__in=self.answer)
+                .order_by("title")
+                .values_list("title", flat=True)
             )
         return self.answer
 
@@ -1617,6 +1394,27 @@ class ReaderStudyPermissionRequest(RequestBase):
 
     def __str__(self):
         return f"{self.object_name} registration request by user {self.user.username}"
+
+    def save(self, *args, **kwargs):
+        adding = self._state.adding
+        super().save(*args, **kwargs)
+        if adding:
+            follow(
+                user=self.user, obj=self, actor_only=False, send_action=False,
+            )
+            Notification.send(
+                type=NotificationType.NotificationTypeChoices.ACCESS_REQUEST,
+                message="requested access to",
+                actor=self.user,
+                target=self.base_object,
+            )
+
+    def delete(self):
+        ct = ContentType.objects.filter(
+            app_label=self._meta.app_label, model=self._meta.model_name
+        ).get()
+        Follow.objects.filter(object_id=self.pk, content_type=ct).delete()
+        super().delete()
 
     class Meta(RequestBase.Meta):
         unique_together = (("reader_study", "user"),)

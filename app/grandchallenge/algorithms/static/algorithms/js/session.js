@@ -9,6 +9,7 @@ const cards = {
 };
 
 const averageJobDuration = moment.duration(JSON.parse(document.getElementById("averageJobDuration").textContent));
+const jobListApiUrl = JSON.parse(document.getElementById("jobListApiUrl").textContent);
 
 // Set anything less than 1s to "a few seconds"
 moment.relativeTimeThreshold('ss', 1);
@@ -60,7 +61,13 @@ function getJobsForImages(imageUrls) {
 
     Promise.all(imageUrls.map(url => fetch(url).then(response => response.json()))
     ).then(images => {
-        getJobStatus(images.map(i => i.job_set).flat());
+        let params = new URLSearchParams();
+        images.forEach(i => params.append("input_image", i.pk));
+        let jobUrl = `${jobListApiUrl}?${params.toString()}`;
+
+        fetch(jobUrl)
+            .then(response => response.json())
+            .then(jobs => handleJobStatus(jobs.results))
     });
 }
 
@@ -75,7 +82,7 @@ function handleJobStatus(jobs) {
     let jobStatuses = jobs.map(j => j.status.toLowerCase());
     let jobUrls = jobs.map(j => j.api_url);
 
-    let queuedJobs = jobStatuses.filter(s => ["queued",].includes(s)).length;
+    let queuedJobs = jobStatuses.filter(s => ["queued", "re-queued"].includes(s)).length;
     let estimatedRemainingTime = queuedJobs * averageJobDuration;
 
     if (jobStatuses.some(s => s === "started")) {
@@ -84,12 +91,12 @@ function handleJobStatus(jobs) {
 
     if (jobStatuses.every(s => s === "succeeded")) {
         setCardCompleteMessage(cards.job, "View Results");
-    } else if (jobStatuses.some(s => s === "started")) {
+    } else if (jobStatuses.some(s => ["started", "provisioning", "provisioned", "executing", "executed", "parsing outputs"].includes(s))) {
         setCardActiveMessage(cards.job, `Started, ${moment.duration(estimatedRemainingTime).humanize()} remaining`);
         setTimeout(function () {
             getJobStatus(jobUrls)
         }, Math.floor(Math.random() * timeout) + 100);
-    } else if (jobStatuses.some(s => s === "queued") || jobStatuses.some(s => s === "re-queued")) {
+    } else if (jobStatuses.some(s => ["queued", "re-queued"].includes(s))) {
         setCardAwaitingMessage(cards.job, "Queued");
         setTimeout(function () {
             getJobStatus(jobUrls)

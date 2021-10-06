@@ -4,11 +4,26 @@ from operator import or_
 from django.contrib.auth.mixins import PermissionRequiredMixin
 from django.db.models import Q
 from django.shortcuts import reverse
-from django.views.generic import DetailView, ListView, TemplateView
+from django.views.generic import CreateView, DetailView, ListView, TemplateView
 from django.views.generic.edit import FormView
 
-from grandchallenge.products.forms import ImportForm
-from grandchallenge.products.models import Company, Product, Status
+from grandchallenge.blogs.views import (
+    PostCreate,
+    PostDetail,
+    PostList,
+    PostUpdate,
+)
+from grandchallenge.products.forms import (
+    ImportForm,
+    ProductsPostUpdateForm,
+    ProjectAirFilesForm,
+)
+from grandchallenge.products.models import (
+    Company,
+    Product,
+    ProjectAirFiles,
+    Status,
+)
 from grandchallenge.products.utils import DataImporter
 
 
@@ -16,13 +31,14 @@ class ProductList(ListView):
     model = Product
     context_object_name = "products"
     queryset = Product.objects.filter(ce_status=Status.CERTIFIED).order_by(
-        "-verified", "-ce_verified", "product_name"
+        "-ce_under", "-verified", "-ce_verified", "product_name"
     )
 
     def get_queryset(self):
         queryset = super().get_queryset().select_related("company")
         subspeciality_query = self.request.GET.get("subspeciality")
         modality_query = self.request.GET.get("modality")
+        ce_under_query = self.request.GET.get("ce_under")
         ce_class_query = self.request.GET.get("ce_class")
         fda_class_query = self.request.GET.get("fda_class")
         search_query = self.request.GET.get("search")
@@ -56,6 +72,9 @@ class ProductList(ListView):
         if modality_query and modality_query != "All":
             queryset = queryset.filter(Q(modality__icontains=modality_query))
 
+        if ce_under_query and ce_under_query != "All":
+            queryset = queryset.filter(Q(ce_under__icontains=ce_under_query))
+
         if ce_class_query and ce_class_query != "All":
             queryset = queryset.filter(Q(ce_class=ce_class_query))
 
@@ -74,6 +93,7 @@ class ProductList(ListView):
         context = super().get_context_data(*args, **kwargs)
         subspeciality_query = self.request.GET.get("subspeciality", "All")
         modality_query = self.request.GET.get("modality", "All")
+        ce_under_query = self.request.GET.get("ce_under", "All")
         ce_class_query = self.request.GET.get("ce_class", "All")
         fda_class_query = self.request.GET.get("fda_class", "All")
         search_query = self.request.GET.get("search", "")
@@ -107,6 +127,8 @@ class ProductList(ListView):
             "Class III",
         ]
 
+        ce_mdd_mdr = ["All", "MDR", "MDD"]
+
         fda_classes = ["All", "Class I", "Class II", "Class III", "No FDA"]
 
         context.update(
@@ -114,10 +136,12 @@ class ProductList(ListView):
                 "q_search": search_query,
                 "subspecialities": subspecialities,
                 "modalities": modalities,
+                "ce_mdd_mdr": ce_mdd_mdr,
                 "ce_classes": ce_classes,
                 "fda_classes": fda_classes,
                 "selected_subspeciality": subspeciality_query,
                 "selected_modality": modality_query,
+                "selected_ce_under": ce_under_query,
                 "selected_ce_class": ce_class_query,
                 "selected_fda_class": fda_class_query,
                 "products_selected_page": True,
@@ -207,6 +231,29 @@ class CompanyDashboard(DetailView):
         return context
 
 
+class ProjectAirPage(ListView):
+    template_name = "products/project_air.html"
+    model = ProjectAirFiles
+    context_object_name = "project_air_files"
+    queryset = ProjectAirFiles.objects.all()
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        is_archive = self.queryset.filter(archive=True)
+        is_current = self.queryset.filter(archive=False)
+        context.update({"is_archive": is_archive, "is_current": is_current})
+        return context
+
+
+class ProjectAirForm(PermissionRequiredMixin, CreateView):
+    template_name = "products/projectairfiles_form.html"
+    form_class = ProjectAirFilesForm
+    permission_required = f"{ProjectAirFiles._meta.app_label}.add_{ProjectAirFiles._meta.model_name}"
+
+    def get_success_url(self):
+        return reverse("products:project-air")
+
+
 class ImportDataView(PermissionRequiredMixin, FormView):
     template_name = "products/import_data.html"
     form_class = ImportForm
@@ -224,12 +271,40 @@ class ImportDataView(PermissionRequiredMixin, FormView):
         form = self.get_form()
         if form.is_valid():
             di = DataImporter()
-            di.import_data(
-                product_data=form.cleaned_data["products_file"],
-                company_data=form.cleaned_data["companies_file"],
-                images_zip=form.cleaned_data["images_zip"][0].open(),
-            )
+            with form.cleaned_data["images_zip"][0].open() as images_zip:
+                di.import_data(
+                    product_data=form.cleaned_data["products_file"],
+                    company_data=form.cleaned_data["companies_file"],
+                    images_zip=images_zip,
+                )
         return response
 
     def get_success_url(self):
         return reverse("products:product-list")
+
+
+class ProductsPostCreate(PostCreate):
+    template_name = "products/post_form.html"
+
+
+class ProductsPostList(PostList):
+    template_name = "products/post_list.html"
+    queryset = PostList.model.objects.filter(
+        published=True, tags__name__contains="Products"
+    )
+
+
+class ProductsPostDetail(PostDetail):
+    template_name = "products/post_detail.html"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        obj = context["object"]
+        is_news = obj.tags.all().filter(slug="news").exists()
+        context.update({"is_news": is_news})
+        return context
+
+
+class ProductsPostUpdate(PostUpdate):
+    template_name = "products/post_form.html"
+    form_class = ProductsPostUpdateForm

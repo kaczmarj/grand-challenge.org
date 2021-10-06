@@ -1,7 +1,7 @@
 import csv
-import re
 
 from django.contrib import messages
+from django.contrib.auth import get_user_model
 from django.contrib.auth.mixins import PermissionRequiredMixin
 from django.contrib.messages.views import SuccessMessageMixin
 from django.core.exceptions import (
@@ -14,13 +14,14 @@ from django.forms.utils import ErrorList
 from django.http import (
     Http404,
     HttpResponse,
+    HttpResponseForbidden,
     HttpResponseRedirect,
     JsonResponse,
 )
 from django.shortcuts import get_object_or_404
-from django.utils import timezone
 from django.utils.functional import cached_property
 from django.utils.html import format_html
+from django.utils.timezone import now
 from django.views.generic import (
     CreateView,
     DeleteView,
@@ -36,11 +37,13 @@ from guardian.mixins import (
     PermissionRequiredMixin as ObjectPermissionRequiredMixin,
 )
 from guardian.shortcuts import get_perms
+from rest_framework import mixins
 from rest_framework.decorators import action
 from rest_framework.permissions import DjangoObjectPermissions
 from rest_framework.response import Response
+from rest_framework.settings import api_settings
 from rest_framework.viewsets import (
-    ModelViewSet,
+    GenericViewSet,
     ReadOnlyModelViewSet,
 )
 from rest_framework_guardian.filters import ObjectPermissionsFilter
@@ -49,17 +52,16 @@ from grandchallenge.cases.forms import UploadRawImagesForm
 from grandchallenge.cases.models import Image, RawImageUploadSession
 from grandchallenge.core.filters import FilterMixin
 from grandchallenge.core.forms import UserFormKwargsMixin
-from grandchallenge.core.permissions.mixins import UserIsNotAnonMixin
-from grandchallenge.core.permissions.rest_framework import (
-    DjangoObjectOnlyPermissions,
-    DjangoObjectOnlyWithCustomPostPermissions,
-)
+from grandchallenge.core.renderers import PaginatedCSVRenderer
 from grandchallenge.core.templatetags.random_encode import random_encode
 from grandchallenge.core.views import PermissionRequestUpdate
 from grandchallenge.datatables.views import Column, PaginatedTableListView
 from grandchallenge.groups.forms import EditorsForm
 from grandchallenge.groups.views import UserGroupUpdateMixin
-from grandchallenge.reader_studies.filters import ReaderStudyFilter
+from grandchallenge.reader_studies.filters import (
+    AnswerFilter,
+    ReaderStudyFilter,
+)
 from grandchallenge.reader_studies.forms import (
     AnswersRemoveForm,
     CategoricalOptionFormSet,
@@ -94,10 +96,10 @@ class ReaderStudyList(FilterMixin, PermissionListMixin, ListView):
     )
     ordering = "-created"
     filter_class = ReaderStudyFilter
+    paginate_by = 40
 
     def get_context_data(self, *args, **kwargs):
         context = super().get_context_data(*args, **kwargs)
-
         context.update(
             {
                 "jumbotron_title": "Reader Studies",
@@ -204,6 +206,9 @@ class ReaderStudyDetail(ObjectPermissionRequiredMixin, DetailView):
                 .order_by("username")
                 .all()
             )
+
+            context.update(self._reader_study_export_context)
+
             context.update(
                 {
                     "readers": readers,
@@ -234,10 +239,26 @@ class ReaderStudyDetail(ObjectPermissionRequiredMixin, DetailView):
 
         return context
 
+    @property
+    def _reader_study_export_context(self):
+        limit = 1000
+        return {
+            "limit": limit,
+            "now": now().isoformat(),
+            "answer_offsets": range(
+                0,
+                Answer.objects.filter(
+                    question__reader_study=self.object
+                ).count(),
+                limit,
+            ),
+            "image_offsets": range(0, self.object.images.count(), limit),
+        }
+
 
 class ReaderStudyUpdate(
-    UserFormKwargsMixin,
     LoginRequiredMixin,
+    UserFormKwargsMixin,
     ObjectPermissionRequiredMixin,
     SuccessMessageMixin,
     UpdateView,
@@ -337,14 +358,14 @@ class ReaderStudyImagesList(
         )
 
 
-class QuestionOptionMixin(object):
+class QuestionOptionMixin:
     def validate_options(self, form, _super):
         context = self.get_context_data()
         options = context["options"]
         if form.data["answer_type"] not in [
-            Question.ANSWER_TYPE_CHOICE,
-            Question.ANSWER_TYPE_MULTIPLE_CHOICE,
-            Question.ANSWER_TYPE_MULTIPLE_CHOICE_DROPDOWN,
+            Question.AnswerType.CHOICE,
+            Question.AnswerType.MULTIPLE_CHOICE,
+            Question.AnswerType.MULTIPLE_CHOICE_DROPDOWN,
         ]:
             if getattr(self, "object", None):
                 self.object.options.all().delete()
@@ -372,8 +393,8 @@ class QuestionOptionMixin(object):
 
 
 class QuestionUpdate(
-    QuestionOptionMixin,
     LoginRequiredMixin,
+    QuestionOptionMixin,
     ObjectPermissionRequiredMixin,
     UpdateView,
 ):
@@ -409,9 +430,6 @@ class QuestionUpdate(
 
     def form_valid(self, form):
         return self.validate_options(form, super())
-
-    def get_success_url(self):
-        return self.object.reader_study.get_absolute_url()
 
 
 class BaseAddObjectToReaderStudyMixin(
@@ -450,9 +468,6 @@ class AddObjectToReaderStudyMixin(BaseAddObjectToReaderStudyMixin, CreateView):
         form.instance.creator = self.request.user
         form.instance.reader_study = self.reader_study
         return super().form_valid(form)
-
-    def get_success_url(self):
-        return self.object.reader_study.get_absolute_url()
 
 
 class AddGroundTruthToReaderStudy(BaseAddObjectToReaderStudyMixin, FormView):
@@ -581,9 +596,6 @@ class AddImagesToReaderStudy(AddObjectToReaderStudyMixin):
         )
         return kwargs
 
-    def get_success_url(self):
-        return self.object.get_absolute_url()
-
 
 class AddQuestionToReaderStudy(
     QuestionOptionMixin, AddObjectToReaderStudyMixin
@@ -629,11 +641,11 @@ class ReadersUpdate(ReaderStudyUserGroupUpdateMixin):
     success_message = "Readers successfully updated"
 
 
-class ReadersProgress(
+class UsersProgress(
     LoginRequiredMixin, ObjectPermissionRequiredMixin, DetailView
 ):
     model = ReaderStudy
-    template_name = "reader_studies/readers_progress.html"
+    template_name = "reader_studies/readerstudy_progress.html"
     permission_required = (
         f"{ReaderStudy._meta.app_label}.change_{ReaderStudy._meta.model_name}"
     )
@@ -642,29 +654,19 @@ class ReadersProgress(
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
 
-        reader_remove_form = ReadersForm()
-        reader_remove_form.fields["action"].initial = ReadersForm.REMOVE
-
-        readers = [
+        users = [
             {
                 "obj": reader,
                 "progress": self.object.get_progress_for_user(reader),
             }
-            for reader in self.object.readers_group.user_set.select_related(
-                "user_profile", "verification"
-            )
+            for reader in get_user_model()
+            .objects.filter(answer__question__reader_study=self.object)
+            .distinct()
+            .select_related("user_profile", "verification")
             .order_by("username")
-            .all()
         ]
 
-        context.update(
-            {
-                "reader_study": self.object,
-                "readers": readers,
-                "reader_remove_form": reader_remove_form,
-                "num_readers": self.object.readers_group.user_set.count(),
-            }
-        )
+        context.update({"reader_study": self.object, "users": users})
 
         return context
 
@@ -699,7 +701,7 @@ class AnswersRemove(
 
 
 class ReaderStudyPermissionRequestCreate(
-    UserIsNotAnonMixin, SuccessMessageMixin, CreateView
+    LoginRequiredMixin, SuccessMessageMixin, CreateView
 ):
     model = ReaderStudyPermissionRequest
     fields = ()
@@ -786,69 +788,25 @@ class ReaderStudyPermissionRequestUpdate(PermissionRequestUpdate):
         return context
 
 
-class ExportCSVMixin(object):
-    def _create_dicts(self, headers, data):
-        return map(lambda x: dict(zip(headers, x)), data)
-
-    def _preprocess_data(self, data):
-        processed = []
-        for entry in data:
-            processed.append(
-                map(lambda x: re.sub(r"[\n\r\t]", " ", str(x)), entry)
-            )
-        return processed
-
-    def _create_csv_response(self, data, headers, filename="export.csv"):
-        response = HttpResponse(content_type="text/csv")
-        response["Content-Disposition"] = f'attachment; filename="{filename}"'
-        writer = csv.DictWriter(
-            response,
-            quoting=csv.QUOTE_ALL,
-            escapechar="\\",
-            fieldnames=headers,
-        )
-        writer.writeheader()
-        csv_dict = self._create_dicts(headers, self._preprocess_data(data))
-        writer.writerows(csv_dict)
-
-        return response
-
-
-class ReaderStudyViewSet(ExportCSVMixin, ReadOnlyModelViewSet):
+class ReaderStudyViewSet(ReadOnlyModelViewSet):
     serializer_class = ReaderStudySerializer
     queryset = ReaderStudy.objects.all().prefetch_related(
         "images", "questions__options"
     )
-    permission_classes = [DjangoObjectOnlyPermissions]
-    filter_backends = [ObjectPermissionsFilter]
+    permission_classes = [DjangoObjectPermissions]
+    filter_backends = [DjangoFilterBackend, ObjectPermissionsFilter]
+    filterset_fields = ["slug"]
     change_permission = (
         f"{ReaderStudy._meta.app_label}.change_{ReaderStudy._meta.model_name}"
+    )
+    renderer_classes = (
+        *api_settings.DEFAULT_RENDERER_CLASSES,
+        PaginatedCSVRenderer,
     )
 
     def _check_change_perms(self, user, obj):
         if not (user and user.has_perm(self.change_permission, obj)):
             raise Http404()
-
-    # TODO JM @action(detail=True)
-    def export_answers(self, request, pk=None):
-        reader_study = self.get_object()
-        self._check_change_perms(request.user, reader_study)
-        data = []
-        headers = []
-        for answer in (
-            Answer.objects.select_related("question__reader_study")
-            .select_related("creator")
-            .prefetch_related("images")
-            .filter(question__reader_study=reader_study, is_ground_truth=False)
-        ):
-            data += [answer.csv_values]
-            if len(answer.csv_headers) > len(headers):
-                headers = answer.csv_headers
-        return self._create_csv_response(
-            data,
-            headers,
-            filename=f"{reader_study.slug}-answers-{timezone.now().isoformat()}.csv",
-        )
 
     @action(detail=True, methods=["patch"])
     def generate_hanging_list(self, request, pk=None):
@@ -913,19 +871,34 @@ class QuestionViewSet(ReadOnlyModelViewSet):
     serializer_class = QuestionSerializer
     queryset = Question.objects.all().select_related("reader_study")
     permission_classes = [DjangoObjectPermissions]
-    filter_backends = [ObjectPermissionsFilter]
+    filter_backends = [DjangoFilterBackend, ObjectPermissionsFilter]
+    filterset_fields = ["reader_study"]
+    renderer_classes = (
+        *api_settings.DEFAULT_RENDERER_CLASSES,
+        PaginatedCSVRenderer,
+    )
 
 
-class AnswerViewSet(ModelViewSet):
+class AnswerViewSet(
+    mixins.CreateModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.UpdateModelMixin,
+    mixins.ListModelMixin,
+    GenericViewSet,
+):
     serializer_class = AnswerSerializer
     queryset = (
         Answer.objects.all()
         .select_related("creator", "question__reader_study")
         .prefetch_related("images")
     )
-    permission_classes = [DjangoObjectOnlyWithCustomPostPermissions]
+    permission_classes = [DjangoObjectPermissions]
     filter_backends = [DjangoFilterBackend, ObjectPermissionsFilter]
-    filterset_fields = ["question__reader_study"]
+    filterset_class = AnswerFilter
+    renderer_classes = (
+        *api_settings.DEFAULT_RENDERER_CLASSES,
+        PaginatedCSVRenderer,
+    )
 
     def perform_create(self, serializer):
         serializer.save(creator=self.request.user)
@@ -949,3 +922,37 @@ class AnswerViewSet(ModelViewSet):
 
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
+
+
+class QuestionDelete(
+    LoginRequiredMixin, ObjectPermissionRequiredMixin, DeleteView
+):
+    model = Question
+
+    permission_required = (
+        f"{ReaderStudy._meta.app_label}.change_{ReaderStudy._meta.model_name}"
+    )
+    raise_exception = True
+
+    success_message = "Question was successfully deleted"
+
+    def get_permission_object(self):
+        return self.reader_study
+
+    @property
+    def reader_study(self):
+        return get_object_or_404(ReaderStudy, slug=self.kwargs["slug"])
+
+    def get_success_url(self):
+        return reverse(
+            "reader-studies:detail", kwargs={"slug": self.kwargs["slug"]}
+        )
+
+    def delete(self, request, *args, **kwargs):
+        question = self.get_object()
+        if question.is_fully_editable:
+            messages.success(self.request, self.success_message)
+            return super().delete(request, *args, **kwargs)
+        return HttpResponseForbidden(
+            reason="This question already has answers associated with it"
+        )

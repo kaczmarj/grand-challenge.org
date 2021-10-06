@@ -1,4 +1,4 @@
-{% extends "challenge.html" %}
+{% extends "base.html" %}
 {% load evaluation_extras %}
 {% load user_profile_link from profiles %}
 {% load guardian_tags %}
@@ -17,6 +17,10 @@
     </ol>
 {% endblock %}
 
+{% block topbar2 %}
+    {% include "evaluation/partials/phase_navbar.html" %}
+{% endblock %}
+
 {% block content %}
 
     <h2>Evaluations</h2>
@@ -33,12 +37,13 @@
                     <th>User</th>
                 {% endif %}
                 <th>Status</th>
+                {% if "change_challenge" in challenge_perms %}
+                    <th>Hide/Publish</th>
+                    <th>Algorithm Results</th>
+                {% endif %}
                 <th>Output</th>
                 <th>Position</th>
                 <th>Comment</th>
-                {% if "change_challenge" in challenge_perms %}
-                    <th>Hide/Publish</th>
-                {% endif %}
             </tr>
             </thead>
             <tbody>
@@ -63,44 +68,13 @@
                         </td>
                     {% endif %}
                     <td>
-                    <span class="badge
-                    {% if evaluation.status == evaluation.FAILURE or evaluation.status == evaluation.CANCELLED %}
-                        badge-danger
-                    {% elif evaluation.status == evaluation.RETRY %}
-                        badge-warning
-                    {% elif evaluation.status == evaluation.SUCCESS %}
-                        badge-success
-                    {% else %}
-                        badge-info
-                    {% endif %}">
+                    <span class="badge badge-{{ evaluation.status_context }}">
+                        {% if evaluation.animate %}
+                            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                        {% endif %}
                         {{ evaluation.get_status_display }}
                     </span>
                     </td>
-
-                    <td>
-                        {% if evaluation.status == evaluation.SUCCESS %}
-                            {% if evaluation.published %}
-                                <a href="{{ evaluation.get_absolute_url }}">Result</a>
-                            {% else %}
-                                Submission is under review by the challenge admins.
-                            {% endif %}
-                        {% elif evaluation.FAILURE %}
-                            {% firstof evaluation.error_message evaluation.get_status_display %}
-                        {% endif %}
-                    </td>
-
-                    <td data-order="{{ evaluation.rank }}">
-                        {% if evaluation.rank > 0 %}
-                            {{ evaluation.rank }}
-                        {% endif %}
-                        {% if evaluation.submission.supplementary_file %}
-                            <a href="{{ evaluation.submission.supplementary_file.url }}">
-                                <i class="fa fa-file"></i>
-                            </a>
-                        {% endif %}
-                    </td>
-
-                    <td>{{ evaluation.submission.comment }}</td>
 
                     {% if "change_challenge" in challenge_perms %}
                         <td>
@@ -126,8 +100,37 @@
                                 </form>
                             {% endif %}
                         </td>
+                        <td>
+                            {% if evaluation.submission.phase.submission_kind == evaluation.submission.phase.SubmissionKind.ALGORITHM %}
+                                <a href="{% url 'algorithms:job-list' slug=evaluation.submission.algorithm_image.algorithm.slug %}">{{ evaluation.submission.algorithm_image.algorithm.title }}</a>
+                            {% endif %}
+                        </td>
                     {% endif %}
 
+                    <td>
+                        {% if evaluation.status == evaluation.SUCCESS %}
+                            {% if evaluation.published %}
+                                <a href="{{ evaluation.get_absolute_url }}">Result</a>
+                            {% else %}
+                                Submission is under review by the challenge admins.
+                            {% endif %}
+                        {% elif evaluation.status == evaluation.FAILURE %}
+                            {% firstof evaluation.error_message evaluation.get_status_display %}
+                        {% endif %}
+                    </td>
+
+                    <td data-order="{{ evaluation.rank }}">
+                        {% if evaluation.rank > 0 %}
+                            {{ evaluation.rank }}
+                        {% endif %}
+                        {% if evaluation.submission.supplementary_file %}
+                            <a href="{{ evaluation.submission.supplementary_file.url }}">
+                                <i class="fa fa-file"></i>
+                            </a>
+                        {% endif %}
+                    </td>
+
+                    <td>{{ evaluation.submission.comment }}</td>
                 </tr>
             {% endfor %}
 

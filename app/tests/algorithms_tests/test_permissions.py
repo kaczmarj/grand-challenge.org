@@ -2,6 +2,7 @@ import pytest
 from django.conf import settings
 from django.contrib.auth.models import Group
 from django.test import TestCase
+from django_capture_on_commit_callbacks import capture_on_commit_callbacks
 from guardian.shortcuts import (
     assign_perm,
     get_group_perms,
@@ -12,8 +13,10 @@ from guardian.shortcuts import (
 from grandchallenge.algorithms.models import Job
 from grandchallenge.algorithms.tasks import (
     create_algorithm_jobs_for_archive,
-    create_algorithm_jobs_for_evaluation,
     create_algorithm_jobs_for_session,
+)
+from grandchallenge.evaluation.tasks import (
+    create_algorithm_jobs_for_evaluation,
 )
 from tests.algorithms_tests.factories import (
     AlgorithmFactory,
@@ -21,9 +24,13 @@ from tests.algorithms_tests.factories import (
     AlgorithmJobFactory,
 )
 from tests.algorithms_tests.utils import TwoAlgorithms
-from tests.archives_tests.factories import ArchiveFactory
+from tests.archives_tests.factories import ArchiveFactory, ArchiveItemFactory
+from tests.components_tests.factories import ComponentInterfaceValueFactory
 from tests.evaluation_tests.factories import EvaluationFactory
-from tests.evaluation_tests.test_permissions import get_groups_with_set_perms
+from tests.evaluation_tests.test_permissions import (
+    get_groups_with_set_perms,
+    get_users_with_set_perms,
+)
 from tests.factories import (
     ImageFactory,
     UploadSessionFactory,
@@ -282,13 +289,14 @@ class TestJobPermissions(TestCase):
 
         # Editors and viewers should be able to view the job
         assert get_groups_with_set_perms(job) == {
-            ai.algorithm.editors_group: {"view_job"},
+            ai.algorithm.editors_group: {"view_job", "view_logs"},
             job.viewers: {"view_job"},
         }
         # The Session Creator should be able to change the job
-        assert get_users_with_perms(
+        # and view the logs
+        assert get_users_with_set_perms(
             job, attach_perms=True, with_group_users=False
-        ) == {u: ["change_job"]}
+        ) == {u: {"change_job"}}
         # The only member of the viewers group should be the creator
         assert {*job.viewers.user_set.all()} == {u}
 
@@ -302,20 +310,27 @@ class TestJobPermissions(TestCase):
         im = ImageFactory()
         s.image_set.set([im])
 
-        archive.images.set([im])
+        civ = ComponentInterfaceValueFactory(
+            image=im, interface=ai.algorithm.inputs.get()
+        )
+        archive_item = ArchiveItemFactory(archive=archive)
+        with capture_on_commit_callbacks(execute=True):
+            archive_item.values.add(civ)
+
         archive.algorithms.set([ai.algorithm])
 
         create_algorithm_jobs_for_archive(archive_pks=[archive.pk])
 
         job = Job.objects.get()
 
-        # The archive editors, users and uploaders, algorithm editors and job
-        # viewers should be able to view the job
+        # The archive editors, users and uploaders and job
+        # viewers should be able to view the job.
+        # NOTE: NOT THE ALGORITHM EDITORS, if they need
+        # access the job can be shared with them.
         assert get_groups_with_set_perms(job) == {
             archive.editors_group: {"view_job"},
             archive.users_group: {"view_job"},
             archive.uploaders_group: {"view_job"},
-            ai.algorithm.editors_group: {"view_job"},
             job.viewers: {"view_job"},
         }
         # No-one should be able to change the job
@@ -341,17 +356,26 @@ class TestJobPermissions(TestCase):
         im = ImageFactory()
         s.image_set.set([im])
 
-        archive.images.set([im])
+        civ = ComponentInterfaceValueFactory(
+            image=im, interface=ai.algorithm.inputs.get()
+        )
+        archive_item = ArchiveItemFactory(archive=archive)
+        with capture_on_commit_callbacks(execute=True):
+            archive_item.values.add(civ)
 
         create_algorithm_jobs_for_evaluation(evaluation_pk=evaluation.pk)
 
         job = Job.objects.get()
 
         # Only the challenge admins and job viewers should be able to view the
-        # job. NOTE: NOT THE ALGORITHM EDITORS, they are the participants
+        # job and logs.
+        # NOTE: NOT THE *ALGORITHM* EDITORS, they are the participants
         # to the challenge and should not be able to see the test data
         assert get_groups_with_set_perms(job) == {
-            evaluation.submission.phase.challenge.admins_group: {"view_job"},
+            evaluation.submission.phase.challenge.admins_group: {
+                "view_job",
+                "view_logs",
+            },
             job.viewers: {"view_job"},
         }
         # No-one should be able to change the job

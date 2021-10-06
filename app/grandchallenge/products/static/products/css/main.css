@@ -2,6 +2,15 @@
     border-radius: 0;
 }
 
+.btn {
+    border-radius: 0;
+}
+
+.btn-primary {
+    background-color: #00afdc;
+    border-color: #00afdc;
+}
+
 html {
     overflow-y: scroll;
     position: relative;
@@ -18,6 +27,12 @@ html {
     color: #00afdc !important
 }
 
+.bg-radboud {
+    color: #fff;
+    background-color: #00afdc;
+    border-color: #00afdc;
+}
+
 .btn:hover {
     background-color: #007896;
     border-color: #007896;
@@ -25,7 +40,7 @@ html {
 }
 
 a {
-    color: #212529;
+    color: #00afdc;
 }
 
 a:hover {

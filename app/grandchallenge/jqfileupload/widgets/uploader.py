@@ -1,5 +1,6 @@
 import hashlib
 import uuid
+from contextlib import contextmanager
 from io import BufferedIOBase
 
 from django import forms
@@ -145,7 +146,7 @@ class OpenedStagedAjaxFile(BufferedIOBase):
             return b""
 
         if self._file_pointer < 0:
-            raise IOError("invalid file pointer position")
+            raise OSError("invalid file pointer position")
 
         if size is None:
             size = self.size - self._file_pointer
@@ -191,7 +192,7 @@ class OpenedStagedAjaxFile(BufferedIOBase):
         elif from_what == 2:
             new_pointer = self.size + offset
         if new_pointer < 0:
-            raise IOError("invalid file pointer")
+            raise OSError("invalid file pointer")
 
         self._file_pointer = new_pointer
         if self._file_pointer < self._chunk_map.len:
@@ -287,18 +288,26 @@ class StagedAjaxFile:
 
         return self.size is not None
 
-    def open(self):
+    @contextmanager
+    def open(self, mode="rb"):
         """
         Opens a file handle-like object for reading the file. Opens in read mode.
 
         Returns
         -------
-        :class:`OpenedStagedAjaxFile` represeting the opened file.
+        :class:`OpenedStagedAjaxFile` representing the opened file.
         """
         if not self.is_complete:
-            raise IOError("incomplete upload")
+            raise OSError("incomplete upload")
 
-        return OpenedStagedAjaxFile(self.__uuid)
+        if mode != "rb":
+            raise ValueError("Can only be opened in rb mode")
+
+        f = OpenedStagedAjaxFile(self.__uuid)
+        try:
+            yield f
+        finally:
+            f.close()
 
     def delete(self):
         query = self._raise_if_missing()
@@ -309,8 +318,8 @@ class StagedAjaxFile:
 
 class UploadedAjaxFileList(forms.Field):
     def to_python(self, value):
-        if value is None:
-            value = ""
+        if value is None or value == "None":
+            return
         allowed_characters = "0123456789abcdefABCDEF-,"
         if any(c for c in value if c not in allowed_characters):
             raise ValidationError("UUID list includes invalid characters")

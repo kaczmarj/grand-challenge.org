@@ -2,6 +2,7 @@ import pytest
 from django.conf import settings
 from django.contrib.auth.models import Group
 from django.test import TestCase
+from django_capture_on_commit_callbacks import capture_on_commit_callbacks
 from guardian.shortcuts import get_groups_with_perms, get_users_with_perms
 
 from grandchallenge.evaluation.models import (
@@ -10,7 +11,6 @@ from grandchallenge.evaluation.models import (
     Phase,
     Submission,
 )
-from tests.algorithms_tests.factories import AlgorithmJobFactory
 from tests.evaluation_tests.factories import (
     EvaluationFactory,
     MethodFactory,
@@ -27,6 +27,16 @@ def get_groups_with_set_perms(*args, **kwargs):
     """
     kwargs.update({"attach_perms": True})
     return {k: {*v} for k, v in get_groups_with_perms(*args, **kwargs).items()}
+
+
+def get_users_with_set_perms(*args, **kwargs):
+    """
+    Executes get_users_with_perms with attach_perms=True, and converts the
+    resulting list for each group to a set for easier comparison in tests as
+    the ordering of permissions is not always consistent.
+    """
+    kwargs.update({"attach_perms": True})
+    return {k: {*v} for k, v in get_users_with_perms(*args, **kwargs).items()}
 
 
 class TestPhasePermissions(TestCase):
@@ -70,21 +80,6 @@ class TestSubmissionPermissions(TestCase):
         assert get_users_with_perms(
             s, attach_perms=True, with_group_users=False
         ) == {s.creator: ["view_submission"]}
-
-
-class TestAlgorithmEvaluationPermissions(TestCase):
-    def test_algorithm_evaluation_permissions(self):
-        """
-        Only the challenge admins should be able to view algorithm evaluations
-        The submission creator, algorithm groups and participants should not
-        have view permissions
-        """
-        j = AlgorithmJobFactory()
-
-        assert get_groups_with_set_perms(j) == {j.viewers: {"view_job"}}
-        assert get_users_with_perms(
-            j, attach_perms=True, with_group_users=False
-        ) == {j.creator: ["change_job"]}
 
 
 @pytest.mark.django_db
@@ -197,8 +192,9 @@ class TestEvaluationPermissions:
         settings.task_eager_propagates = (True,)
         settings.task_always_eager = (True,)
 
-        e.submission.phase.challenge.hidden = True
-        e.submission.phase.challenge.save()
+        with capture_on_commit_callbacks(execute=True):
+            e.submission.phase.challenge.hidden = True
+            e.submission.phase.challenge.save()
 
         assert get_groups_with_set_perms(e) == {
             e.submission.phase.challenge.admins_group: {
@@ -232,8 +228,9 @@ class TestEvaluationPermissions:
         settings.task_eager_propagates = (True,)
         settings.task_always_eager = (True,)
 
-        e.submission.phase.challenge.hidden = False
-        e.submission.phase.challenge.save()
+        with capture_on_commit_callbacks(execute=True):
+            e.submission.phase.challenge.hidden = False
+            e.submission.phase.challenge.save()
 
         assert get_groups_with_set_perms(e) == {
             e.submission.phase.challenge.admins_group: {

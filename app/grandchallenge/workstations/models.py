@@ -8,16 +8,17 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.core.validators import MaxValueValidator, RegexValidator
 from django.db import models
 from django.db.models.signals import post_delete
+from django.db.transaction import on_commit
 from django.dispatch import receiver
+from django.utils.functional import cached_property
 from django_extensions.db.models import TitleSlugDescriptionModel
 from guardian.shortcuts import assign_perm, remove_perm
-from rest_framework.authtoken.models import Token
+from knox.models import AuthToken
 from simple_history.models import HistoricalRecords
+from stdimage import JPEGField
 
-from grandchallenge.components.backends.docker import (
-    ComponentException,
-    Service,
-)
+from grandchallenge.components.backends.docker import Service
+from grandchallenge.components.backends.exceptions import ComponentException
 from grandchallenge.components.models import ComponentImage
 from grandchallenge.components.tasks import start_service, stop_service
 from grandchallenge.core.models import UUIDModel
@@ -43,18 +44,20 @@ logger = logging.getLogger(__name__)
 class Workstation(UUIDModel, TitleSlugDescriptionModel):
     """Store the title and description of a workstation."""
 
-    logo = models.ImageField(
-        upload_to=get_logo_path, storage=public_s3_storage
+    logo = JPEGField(
+        upload_to=get_logo_path,
+        storage=public_s3_storage,
+        variations=settings.STDIMAGE_LOGO_VARIATIONS,
     )
     editors_group = models.OneToOneField(
         Group,
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         editable=False,
         related_name="editors_of_workstation",
     )
     users_group = models.OneToOneField(
         Group,
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         editable=False,
         related_name="users_of_workstation",
     )
@@ -75,7 +78,7 @@ class Workstation(UUIDModel, TitleSlugDescriptionModel):
     class Meta(UUIDModel.Meta, TitleSlugDescriptionModel.Meta):
         ordering = ("created", "title")
 
-    @property
+    @cached_property
     def latest_ready_image(self):
         """
         Returns
@@ -186,7 +189,7 @@ class WorkstationImage(UUIDModel, ComponentImage):
         workstation
     """
 
-    workstation = models.ForeignKey(Workstation, on_delete=models.CASCADE)
+    workstation = models.ForeignKey(Workstation, on_delete=models.PROTECT)
     http_port = models.PositiveIntegerField(
         default=8080, validators=[MaxValueValidator(2 ** 16 - 1)]
     )
@@ -309,7 +312,7 @@ class Session(UUIDModel):
         EU_NL_2 = "eu-nl-2", "Netherlands (Amsterdam)"
 
     status = models.PositiveSmallIntegerField(
-        choices=STATUS_CHOICES, default=QUEUED
+        choices=STATUS_CHOICES, default=QUEUED, db_index=True,
     )
     region = models.CharField(
         max_length=14,
@@ -320,14 +323,19 @@ class Session(UUIDModel):
     creator = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL
     )
+    auth_token = models.ForeignKey(
+        AuthToken, null=True, on_delete=models.SET_NULL
+    )
     workstation_image = models.ForeignKey(
-        WorkstationImage, on_delete=models.CASCADE
+        WorkstationImage, on_delete=models.PROTECT
     )
     maximum_duration = models.DurationField(default=timedelta(minutes=10))
     user_finished = models.BooleanField(default=False)
     logs = models.TextField(editable=False, blank=True)
     ping_times = models.JSONField(null=True, default=None)
-    history = HistoricalRecords(excluded_fields=["logs", "ping_times"])
+    history = HistoricalRecords(
+        excluded_fields=["logs", "ping_times", "auth_token"]
+    )
 
     class Meta(UUIDModel.Meta):
         ordering = ("created", "creator")
@@ -379,15 +387,23 @@ class Session(UUIDModel):
             "GRAND_CHALLENGE_API_ROOT": unquote(reverse("api:api-root")),
             "WORKSTATION_SENTRY_DSN": settings.WORKSTATION_SENTRY_DSN,
             "WORKSTATION_SESSION_ID": str(self.pk),
-            "GRAND_CHALLENGE_INTERNAL": settings.WORKSTATION_INTERNAL_NETWORK,
         }
 
         if self.creator:
-            env.update(
-                {
-                    "GRAND_CHALLENGE_AUTHORIZATION": f"TOKEN {Token.objects.get_or_create(user=self.creator)[0].key}"
-                }
+            if self.auth_token:
+                self.auth_token.delete()
+
+            duration_limit = timedelta(
+                seconds=settings.WORKSTATIONS_SESSION_DURATION_LIMIT
+            ) + timedelta(minutes=settings.WORKSTATIONS_GRACE_MINUTES)
+            auth_token, token = AuthToken.objects.create(
+                user=self.creator, expiry=duration_limit
             )
+
+            self.auth_token = auth_token
+            self.save()
+
+            env.update({"GRAND_CHALLENGE_AUTHORIZATION": f"Bearer {token}"})
 
         if settings.DEBUG:
             # Allow the container to communicate with the dev environment
@@ -403,10 +419,12 @@ class Session(UUIDModel):
             The service for this session, could be active or inactive.
         """
         return Service(
-            job_id=self.pk,
-            job_class=Session,
-            exec_image=self.workstation_image.image,
+            job_id=f"{self._meta.app_label}-{self._meta.model_name}-{self.pk}",
             exec_image_sha256=self.workstation_image.image_sha256,
+            exec_image_repo_tag=self.workstation_image.repo_tag,
+            exec_image_file=self.workstation_image.image,
+            memory_limit=settings.COMPONENTS_MEMORY_LIMIT,
+            requires_gpu=False,
         )
 
     @property
@@ -463,6 +481,9 @@ class Session(UUIDModel):
         self.service.stop_and_cleanup()
         self.update_status(status=self.STOPPED)
 
+        if self.auth_token:
+            self.auth_token.delete()
+
     def update_status(self, *, status: STATUS_CHOICES) -> None:
         """
         Updates the status of this session.
@@ -513,10 +534,16 @@ class Session(UUIDModel):
 
         if created:
             self.assign_permissions()
-            start_service.apply_async(
-                kwargs=self.task_kwargs, queue=f"workstations-{self.region}"
+            on_commit(
+                lambda: start_service.apply_async(
+                    kwargs=self.task_kwargs,
+                    queue=f"workstations-{self.region}",
+                )
             )
         elif self.user_finished and self.status != self.STOPPED:
-            stop_service.apply_async(
-                kwargs=self.task_kwargs, queue=f"workstations-{self.region}"
+            on_commit(
+                lambda: stop_service.apply_async(
+                    kwargs=self.task_kwargs,
+                    queue=f"workstations-{self.region}",
+                )
             )

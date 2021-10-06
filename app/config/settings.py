@@ -3,18 +3,20 @@ import re
 from datetime import datetime, timedelta
 from distutils.util import strtobool as strtobool_i
 from itertools import product
-from urllib.parse import quote
 
 import sentry_sdk
 from corsheaders.defaults import default_headers
 from disposable_email_domains import blocklist
 from django.contrib.messages import constants as messages
+from django.urls import reverse
 from machina import MACHINA_MAIN_STATIC_DIR, MACHINA_MAIN_TEMPLATE_DIR
 from sentry_sdk.integrations.celery import CeleryIntegration
 from sentry_sdk.integrations.django import DjangoIntegration
 from sentry_sdk.integrations.logging import ignore_logger
 
 from config.denylist import USERNAME_DENYLIST
+from grandchallenge.algorithms.exceptions import ImageImportError
+from grandchallenge.components.exceptions import PriorStepFailed
 from grandchallenge.core.utils.markdown import BS4Extension
 
 
@@ -23,9 +25,7 @@ def strtobool(val) -> bool:
     return bool(strtobool_i(val))
 
 
-DEBUG = strtobool(os.environ.get("DEBUG", "True"))
-
-ATOMIC_REQUESTS = strtobool(os.environ.get("ATOMIC_REQUESTS", "True"))
+DEBUG = strtobool(os.environ.get("DEBUG", "False"))
 
 COMMIT_ID = os.environ.get("COMMIT_ID", "unknown")
 
@@ -49,6 +49,7 @@ IGNORABLE_404_URLS = [
     re.compile(r".*/trackback.*"),
     re.compile(r"^/site/.*"),
     re.compile(r"^/media/cache/.*"),
+    re.compile(r"^/favicon.ico$"),
 ]
 
 # Used as starting points for various other paths. realpath(__file__) starts in
@@ -69,15 +70,14 @@ DATABASES = {
                 SITE_ROOT, "config", "certs", "rds-ca-2019-root.pem"
             ),
         },
+        "ATOMIC_REQUESTS": strtobool(
+            os.environ.get("ATOMIC_REQUESTS", "True")
+        ),
     }
 }
 
 EMAIL_BACKEND = "djcelery_email.backends.CeleryEmailBackend"
-EMAIL_HOST = os.environ.get("EMAIL_HOST", "")
-EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
-EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
-EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "25"))
-EMAIL_USE_TLS = strtobool(os.environ.get("EMAIL_USE_TLS", "False"))
+CELERY_EMAIL_BACKEND = "django_ses.SESBackend"
 DEFAULT_FROM_EMAIL = os.environ.get(
     "DEFAULT_FROM_EMAIL", "webmaster@localhost"
 )
@@ -86,22 +86,6 @@ SERVER_EMAIL = os.environ.get("SERVER_EMAIL", "root@localhost")
 ANONYMOUS_USER_NAME = "AnonymousUser"
 REGISTERED_USERS_GROUP_NAME = "__registered_users_group__"
 REGISTERED_AND_ANON_USERS_GROUP_NAME = "__registered_and_anonymous_users__"
-
-AUTH_PROFILE_MODULE = "profiles.UserProfile"
-USERENA_USE_HTTPS = False
-USERENA_DEFAULT_PRIVACY = "open"
-USERENA_MUGSHOT_SIZE = 460
-USERENA_REGISTER_USER = False
-USERENA_REGISTER_PROFILE = False
-LOGIN_URL = "/users/signin/"
-LOGOUT_URL = "/users/signout/"
-
-LOGIN_REDIRECT_URL = "/users/login-redirect/"
-SOCIAL_AUTH_LOGIN_REDIRECT_URL = LOGIN_REDIRECT_URL
-
-# Do not give message popups saying "you have been logged out". Users are expected
-# to know they have been logged out when they click the logout button
-USERENA_USE_MESSAGES = (False,)
 
 # Local time zone for this installation. Choices can be found here:
 # http://en.wikipedia.org/wiki/List_of_tz_zones_by_name
@@ -129,6 +113,14 @@ USE_L10N = True
 # If you set this to False, Django will not use timezone-aware datetimes.
 USE_TZ = True
 
+# General forum
+DOCUMENTATION_HELP_FORUM_PK = os.environ.get(
+    "DOCUMENTATION_HELP_FORUM_PK", "1"
+)
+DOCUMENTATION_HELP_FORUM_SLUG = os.environ.get(
+    "DOCUMENTATION_HELP_FORUM_SLUG", "general"
+)
+
 ##############################################################################
 #
 # Storage
@@ -140,17 +132,18 @@ DEFAULT_FILE_STORAGE = "grandchallenge.core.storage.PublicS3Storage"
 JQFILEUPLOAD_UPLOAD_SUBIDRECTORY = "jqfileupload"
 IMAGE_FILES_SUBDIRECTORY = "images"
 EVALUATION_FILES_SUBDIRECTORY = "evaluation"
+COMPONENTS_FILES_SUBDIRECTORY = "components"
 
 AWS_S3_FILE_OVERWRITE = False
 # Note: deprecated in django storages 2.0
 AWS_BUCKET_ACL = "private"
 AWS_DEFAULT_ACL = "private"
-AWS_S3_REGION_NAME = os.environ.get("AWS_S3_REGION_NAME", None)
+AWS_S3_MAX_MEMORY_SIZE = 1_048_576  # 100 MB
+AWS_DEFAULT_REGION = os.environ.get("AWS_DEFAULT_REGION", "eu-central-1")
+AWS_SES_REGION_ENDPOINT = f"email.{AWS_DEFAULT_REGION}.amazonaws.com"
 
 # This is for storing files that should not be served to the public
 PRIVATE_S3_STORAGE_KWARGS = {
-    "access_key": os.environ.get("PRIVATE_S3_STORAGE_ACCESS_KEY", ""),
-    "secret_key": os.environ.get("PRIVATE_S3_STORAGE_SECRET_KEY", ""),
     "bucket_name": os.environ.get(
         "PRIVATE_S3_STORAGE_BUCKET_NAME", "grand-challenge-private"
     ),
@@ -158,8 +151,6 @@ PRIVATE_S3_STORAGE_KWARGS = {
 }
 
 PROTECTED_S3_STORAGE_KWARGS = {
-    "access_key": os.environ.get("PROTECTED_S3_STORAGE_ACCESS_KEY", ""),
-    "secret_key": os.environ.get("PROTECTED_S3_STORAGE_SECRET_KEY", ""),
     "bucket_name": os.environ.get(
         "PROTECTED_S3_STORAGE_BUCKET_NAME", "grand-challenge-protected"
     ),
@@ -179,8 +170,6 @@ PROTECTED_S3_STORAGE_CLOUDFRONT_DOMAIN = os.environ.get(
 )
 
 PUBLIC_S3_STORAGE_KWARGS = {
-    "access_key": os.environ.get("PUBLIC_S3_STORAGE_ACCESS_KEY", ""),
-    "secret_key": os.environ.get("PUBLIC_S3_STORAGE_SECRET_KEY", ""),
     "bucket_name": os.environ.get(
         "PUBLIC_S3_STORAGE_BUCKET_NAME", "grand-challenge-public"
     ),
@@ -192,7 +181,9 @@ PUBLIC_S3_STORAGE_KWARGS = {
 # Key pair used for signing CloudFront URLS, only used if
 # PROTECTED_S3_STORAGE_USE_CLOUDFRONT is True
 CLOUDFRONT_KEY_PAIR_ID = os.environ.get("CLOUDFRONT_KEY_PAIR_ID", "")
-CLOUDFRONT_PRIVATE_KEY_PATH = os.environ.get("CLOUDFRONT_PRIVATE_KEY_PATH", "")
+CLOUDFRONT_PRIVATE_KEY_BASE64 = os.environ.get(
+    "CLOUDFRONT_PRIVATE_KEY_BASE64", ""
+)
 CLOUDFRONT_URL_EXPIRY_SECONDS = int(
     os.environ.get("CLOUDFRONT_URL_EXPIRY_SECONDS", "300")  # 5 mins
 )
@@ -202,11 +193,12 @@ CLOUDFRONT_URL_EXPIRY_SECONDS = int(
 # Caching
 #
 ##############################################################################
+REDIS_HOSTNAME = os.environ.get("REDIS_HOSTNAME", "redis")
 
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": "redis://redis:6379/1",
+        "LOCATION": f"redis://{REDIS_HOSTNAME}:6379/1",
         "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient"},
     },
     "machina_attachments": {
@@ -220,12 +212,35 @@ CHALLENGE_SUBDOMAIN_URL_CONF = "config.urls.challenge_subdomain"
 RENDERING_SUBDOMAIN_URL_CONF = "config.urls.rendering_subdomain"
 DEFAULT_SCHEME = os.environ.get("DEFAULT_SCHEME", "https")
 
+# Workaround for https://github.com/ellmetha/django-machina/issues/219
+ABSOLUTE_URL_OVERRIDES = {
+    "forum.forum": lambda o: reverse(
+        "forum:forum", kwargs={"slug": o.slug, "pk": o.pk},
+    ),
+    "forum_conversation.topic": lambda o: reverse(
+        "forum_conversation:topic",
+        kwargs={
+            "slug": o.slug,
+            "pk": o.pk,
+            "forum_slug": o.forum.slug,
+            "forum_pk": o.forum.pk,
+        },
+    ),
+}
+
 SESSION_COOKIE_DOMAIN = os.environ.get(
     "SESSION_COOKIE_DOMAIN", ".gc.localhost"
 )
 # We're always running behind a proxy so set these to true
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
+# Trust all subdomains for CSRF, used for jqfileupload. Changed the name
+# of the CSRF token as existing ones are already in use.
+CSRF_COOKIE_DOMAIN = SESSION_COOKIE_DOMAIN
+CSRF_COOKIE_NAME = "_csrftoken"
+CSRF_TRUSTED_ORIGINS = [
+    SESSION_COOKIE_DOMAIN,
+]
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 # Set the allowed hosts to the cookie domain
@@ -244,9 +259,29 @@ SECURE_BROWSER_XSS_FILTER = strtobool(
     os.environ.get("SECURE_BROWSER_XSS_FILTER", "False")
 )
 X_FRAME_OPTIONS = os.environ.get("X_FRAME_OPTIONS", "DENY")
+# "origin-when-cross-origin" required for jqfileupload for cross domain POSTs
 SECURE_REFERRER_POLICY = os.environ.get(
-    "SECURE_REFERRER_POLICY", "same-origin"
+    "SECURE_REFERRER_POLICY", "origin-when-cross-origin"
 )
+
+PERMISSIONS_POLICY = {
+    "accelerometer": [],
+    "ambient-light-sensor": [],
+    "autoplay": [],
+    "camera": [],
+    "display-capture": [],
+    "document-domain": [],
+    "encrypted-media": [],
+    "fullscreen": [],
+    "geolocation": [],
+    "gyroscope": [],
+    "interest-cohort": [],
+    "magnetometer": [],
+    "microphone": [],
+    "midi": [],
+    "payment": [],
+    "usb": [],
+}
 
 IPWARE_META_PRECEDENCE_ORDER = (
     # Set by nginx
@@ -304,6 +339,7 @@ TEMPLATES = [
                 "grandchallenge.core.context_processors.debug",
                 "grandchallenge.core.context_processors.sentry_dsn",
                 "grandchallenge.core.context_processors.footer_links",
+                "grandchallenge.core.context_processors.help_forum",
                 "machina.core.context_processors.metadata",
             ],
             "loaders": [
@@ -318,9 +354,11 @@ MIDDLEWARE = (
     "django.middleware.security.SecurityMiddleware",  # Keep security at top
     "whitenoise.middleware.WhiteNoiseMiddleware",
     # Keep whitenoise after security and before all else
+    "aws_xray_sdk.ext.django.middleware.XRayMiddleware",  # xray near the top
     "corsheaders.middleware.CorsMiddleware",  # Keep CORS near the top
     "django.middleware.common.BrokenLinkEmailsMiddleware",
     # Keep BrokenLinkEmailsMiddleware near the top
+    "django_permissions_policy.PermissionsPolicyMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -333,9 +371,12 @@ MIDDLEWARE = (
     "grandchallenge.subdomains.middleware.subdomain_middleware",
     "grandchallenge.subdomains.middleware.challenge_subdomain_middleware",
     "grandchallenge.subdomains.middleware.subdomain_urlconf_middleware",
+    "grandchallenge.timezones.middleware.TimezoneMiddleware",
     "machina.apps.forum_permission.middleware.ForumPermissionMiddleware",
     # Flatpage fallback almost last
     "django.contrib.flatpages.middleware.FlatpageFallbackMiddleware",
+    # Redirects last as they're a last resort
+    "django.contrib.redirects.middleware.RedirectFallbackMiddleware",
 )
 
 # Python dotted path to the WSGI application used by Django's runserver.
@@ -354,18 +395,17 @@ DJANGO_APPS = [
     "django.contrib.postgres",
     "django.contrib.flatpages",
     "django.contrib.sitemaps",
+    "django.contrib.redirects",
 ]
 
 THIRD_PARTY_APPS = [
+    "aws_xray_sdk.ext.django",  # tracing
     "django_celery_results",  # database results backend
     "django_celery_beat",  # periodic tasks
     "djcelery_email",  # asynchronous emails
-    "userena",  # user profiles
-    "guardian",  # userena dependency, per object permissions
-    "easy_thumbnails",  # userena dependency
-    "social_django",  # social authentication with oauth2
+    "guardian",  # per object permissions
     "rest_framework",  # provides REST API
-    "rest_framework.authtoken",  # token auth for REST API
+    "knox",  # token auth for REST API
     "crispy_forms",  # bootstrap forms
     "django_select2",  # for multiple choice widgets
     "django_summernote",  # for WYSIWYG page editing
@@ -374,9 +414,17 @@ THIRD_PARTY_APPS = [
     "django_extensions",  # custom extensions
     "simple_history",  # for object history
     "corsheaders",  # to allow api communication from subdomains
-    "drf_yasg",
     "markdownx",  # for editing markdown
+    "stdimage",
     "django_filters",
+    "drf_spectacular",
+    "allauth",
+    "allauth.account",
+    "allauth.socialaccount",
+    "grandchallenge.profiles.providers.gmail",
+    # Notifications with overrides
+    "actstream",
+    "grandchallenge.notifications",
     # django-machina dependencies:
     "mptt",
     "haystack",
@@ -400,6 +448,7 @@ LOCAL_APPS = [
     "grandchallenge.admins",
     "grandchallenge.anatomy",
     "grandchallenge.api",
+    "grandchallenge.api_tokens",
     "grandchallenge.challenges",
     "grandchallenge.core",
     "grandchallenge.evaluation",
@@ -419,9 +468,9 @@ LOCAL_APPS = [
     "grandchallenge.registrations",
     "grandchallenge.annotations",
     "grandchallenge.retina_core",
-    "grandchallenge.retina_importers",
     "grandchallenge.retina_api",
     "grandchallenge.workstations",
+    "grandchallenge.workspaces",
     "grandchallenge.reader_studies",
     "grandchallenge.workstation_configs",
     "grandchallenge.policies",
@@ -436,51 +485,107 @@ LOCAL_APPS = [
     "grandchallenge.datatables",
     "grandchallenge.organizations",
     "grandchallenge.groups",
+    "grandchallenge.github",
+    "grandchallenge.codebuild",
+    "grandchallenge.timezones",
+    "grandchallenge.documentation",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + LOCAL_APPS + THIRD_PARTY_APPS
 
 ADMIN_URL = f'{os.environ.get("DJANGO_ADMIN_URL", "django-admin")}/'
 
-AUTHENTICATION_BACKENDS = (
-    "social_core.backends.google.GoogleOAuth2",
-    "userena.backends.UserenaAuthenticationBackend",
-    "guardian.backends.ObjectPermissionBackend",
+AUTHENTICATION_BACKENDS = [
     "django.contrib.auth.backends.ModelBackend",
-)
+    "allauth.account.auth_backends.AuthenticationBackend",
+    "guardian.backends.ObjectPermissionBackend",
+]
 
-GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 GOOGLE_ANALYTICS_ID = os.environ.get("GOOGLE_ANALYTICS_ID", "GA_TRACKING_ID")
 
-SOCIAL_AUTH_GOOGLE_OAUTH2_KEY = os.environ.get(
-    "SOCIAL_AUTH_GOOGLE_OAUTH2_KEY", ""
-)
-SOCIAL_AUTH_GOOGLE_OAUTH2_SECRET = os.environ.get(
-    "SOCIAL_AUTH_GOOGLE_OAUTH2_SECRET", ""
-)
+##############################################################################
+#
+# django-allauth
+#
+##############################################################################
 
-# TODO: JM - Add the profile filling as a partial
-SOCIAL_AUTH_PIPELINE = (
-    "social_core.pipeline.social_auth.social_details",
-    "social_core.pipeline.social_auth.social_uid",
-    "social_core.pipeline.social_auth.auth_allowed",
-    "social_core.pipeline.social_auth.social_user",
-    "social_core.pipeline.social_auth.associate_by_email",
-    "social_core.pipeline.user.get_username",
-    "social_core.pipeline.user.create_user",
-    "grandchallenge.profiles.social_auth.pipeline.profile.create_profile",
-    "social_core.pipeline.social_auth.associate_user",
-    "social_core.pipeline.social_auth.load_extra_data",
-    "social_core.pipeline.user.user_details",
-)
+ACCOUNT_ADAPTER = "grandchallenge.profiles.adapters.AccountAdapter"
+ACCOUNT_SIGNUP_FORM_CLASS = "grandchallenge.profiles.forms.SignupForm"
 
-# Do not sanitize redirects for social auth so we can redirect back to
-# other subdomains
-SOCIAL_AUTH_SANITIZE_REDIRECTS = False
-SOCIAL_AUTH_REDIRECT_IS_HTTPS = True
+ACCOUNT_AUTHENTICATION_METHOD = "username_email"
+ACCOUNT_EMAIL_REQUIRED = True
+ACCOUNT_EMAIL_VERIFICATION = "mandatory"
+ACCOUNT_USERNAME_MIN_LENGTH = 4
+ACCOUNT_DEFAULT_HTTP_PROTOCOL = "https"
+ACCOUNT_LOGIN_ON_EMAIL_CONFIRMATION = True
+ACCOUNT_USERNAME_BLACKLIST = USERNAME_DENYLIST
 
-# Django 1.6 introduced a new test runner, use it
-TEST_RUNNER = "django.test.runner.DiscoverRunner"
+SOCIALACCOUNT_ADAPTER = "grandchallenge.profiles.adapters.SocialAccountAdapter"
+SOCIALACCOUNT_AUTO_SIGNUP = False
+SOCIALACCOUNT_STORE_TOKENS = False
+SOCIALACCOUNT_PROVIDERS = {
+    "gmail": {
+        "APP": {
+            "client_id": os.environ.get("SOCIAL_AUTH_GOOGLE_OAUTH2_KEY", ""),
+            "secret": os.environ.get("SOCIAL_AUTH_GOOGLE_OAUTH2_SECRET", ""),
+        }
+    }
+}
+
+# Use full paths as view name lookups do not work on subdomains
+LOGIN_URL = "/accounts/login/"
+LOGOUT_URL = "/accounts/logout/"
+LOGIN_REDIRECT_URL = "/users/profile/"
+
+##############################################################################
+#
+# stdimage
+#
+##############################################################################
+
+# Re-render the existing images if these values change
+# https://github.com/codingjoe/django-stdimage#re-rendering-variations
+STDIMAGE_LOGO_VARIATIONS = {
+    # Must be square
+    "full": (None, None, False),
+    "x20": (640, 640, True),
+    "x15": (480, 480, True),
+    "x10": (320, 320, True),
+    "x02": (64, 64, True),
+}
+STDIMAGE_SOCIAL_VARIATIONS = {
+    # Values from social sharing
+    "full": (None, None, False),
+    "x20": (1280, 640, False),
+    "x15": (960, 480, False),
+    "x10": (640, 320, False),
+}
+STDIMAGE_BANNER_VARIATIONS = {
+    # Fixed width, any height
+    "full": (None, None, False),
+    "x20": (2220, None, False),
+    "x15": (1665, None, False),
+    "x10": (1110, None, False),
+}
+
+##############################################################################
+#
+# actstream
+#
+##############################################################################
+
+ACTSTREAM_ENABLE = strtobool(os.environ.get("ACTSTREAM_ENABLE", "True"))
+ACTSTREAM_SETTINGS = {
+    "MANAGER": "actstream.managers.ActionManager",
+    "FETCH_RELATIONS": True,
+    "USE_JSONFIELD": True,
+}
+
+##############################################################################
+#
+# django-summernote
+#
+##############################################################################
 
 # WYSIWYG editing with Summernote
 SUMMERNOTE_THEME = "bs4"
@@ -550,7 +655,7 @@ BLEACH_ALLOWED_ATTRIBUTES = {
     # For bootstrap tables: https://getbootstrap.com/docs/4.3/content/tables/
     "th": ["scope", "colspan"],
     "td": ["colspan"],
-    "video": ["src", "loop", "controls"],
+    "video": ["src", "loop", "controls", "poster"],
 }
 BLEACH_ALLOWED_STYLES = ["height", "margin-left", "text-align", "width"]
 BLEACH_ALLOWED_PROTOCOLS = ["http", "https", "mailto"]
@@ -597,27 +702,37 @@ AUTH_PASSWORD_VALIDATORS = [
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
-    "handlers": {
-        "console": {"level": "DEBUG", "class": "logging.StreamHandler"}
-    },
+    "handlers": {"console": {"class": "logging.StreamHandler"}},
     "loggers": {
         "grandchallenge": {
-            "level": "WARNING",
+            "level": os.environ.get("GRAND_CHALLENGE_LOG_LEVEL", "INFO"),
             "handlers": ["console"],
             "propagate": True,
         },
-        "django.db.backends": {
-            "level": "ERROR",
+        "django": {
+            "level": os.environ.get("DJANGO_LOG_LEVEL", "INFO"),
             "handlers": ["console"],
-            "propagate": False,
+            "propagate": True,
         },
         "werkzeug": {
             "handlers": ["console"],
             "level": "DEBUG",
             "propagate": True,
         },
+        # As AWS_XRAY_CONTEXT_MISSING can only be set to LOG_ERROR,
+        # silence errors from this sdk as they flood the logs in
+        # RedirectFallbackMiddleware
+        "aws_xray_sdk": {
+            "handlers": ["console"],
+            "level": "CRITICAL",
+            "propagate": True,
+        },
     },
 }
+
+###############################################################################
+# SENTRY
+###############################################################################
 
 SENTRY_DSN = os.environ.get("DJANGO_SENTRY_DSN", "")
 SENTRY_ENABLE_JS_REPORTING = strtobool(
@@ -631,29 +746,60 @@ if SENTRY_DSN:
         integrations=[DjangoIntegration(), CeleryIntegration()],
         release=COMMIT_ID,
         traces_sample_rate=float(
-            os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0.01")
+            os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0.0")
         ),
+        ignore_errors=[PriorStepFailed, ImageImportError],
     )
     ignore_logger("django.security.DisallowedHost")
+    ignore_logger("aws_xray_sdk")
+
+###############################################################################
+# XRAY
+###############################################################################
+XRAY_RECORDER = {
+    "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR",
+    "PLUGINS": ("ECSPlugin",),
+    "AWS_XRAY_TRACING_NAME": SESSION_COOKIE_DOMAIN.lstrip("."),
+    "DYNAMIC_NAMING": f"*{SESSION_COOKIE_DOMAIN}",
+}
+
+###############################################################################
+#
+# django-rest-framework and drf-spectacular
+#
+###############################################################################
 
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAdminUser",),
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework.authentication.TokenAuthentication",
-        "grandchallenge.api.authentication.BearerTokenAuthentication",
+        "knox.auth.TokenAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ),
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
     "DEFAULT_PAGINATION_CLASS": "grandchallenge.api.pagination.MaxLimit1000OffsetPagination",
     "PAGE_SIZE": 100,
     "UNAUTHENTICATED_USER": "guardian.utils.get_anonymous_user",
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
-SWAGGER_SETTINGS = {
-    "SECURITY_DEFINITIONS": {
-        "Bearer": {"type": "apiKey", "name": "Authorization", "in": "header"}
-    }
+SPECTACULAR_SETTINGS = {
+    "SCHEMA_PATH_PREFIX": r"/api/v[0-9]",
+    "TITLE": f"{SESSION_COOKIE_DOMAIN.lstrip('.')} API",
+    "DESCRIPTION": f"The API for {SESSION_COOKIE_DOMAIN.lstrip('.')}.",
+    "TOS": f"https://{SESSION_COOKIE_DOMAIN.lstrip('.')}/policies/terms-of-service/",
+    "LICENSE": {"name": "Apache License 2.0"},
+    "VERSION": "1.0.0",
 }
+
+REST_KNOX = {
+    "AUTH_HEADER_PREFIX": "Bearer",
+}
+
+###############################################################################
+#
+# CORS
+#
+###############################################################################
 
 VALID_SUBDOMAIN_REGEX = r"[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?"
 CORS_ORIGIN_REGEX_WHITELIST = [
@@ -670,10 +816,36 @@ CORS_ALLOW_HEADERS = [
 # across domains, but this will allow workstations to access the api
 CORS_ALLOW_CREDENTIALS = True
 
+###############################################################################
+#
+# celery
+#
+###############################################################################
+
+CELERY_TASK_DECORATOR_KWARGS = {
+    "acks-late-2xlarge": {
+        # For idempotent tasks that take a long time (<7200s)
+        # or require a large amount of memory
+        "acks_late": True,
+        "reject_on_worker_lost": True,
+        "queue": "acks-late-2xlarge",
+    },
+    "acks-late-micro-short": {
+        # For idempotent tasks that take a short time (<300s)
+        # and do not require a large amount of memory
+        "acks_late": True,
+        "reject_on_worker_lost": True,
+        "queue": "acks-late-micro-short",
+    },
+}
+
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "django-db")
 CELERY_RESULT_PERSISTENT = True
 CELERY_TASK_ACKS_LATE = strtobool(
     os.environ.get("CELERY_TASK_ACKS_LATE", "False")
+)
+CELERY_WORKER_PREFETCH_MULTIPLIER = int(
+    os.environ.get("CELERY_WORKER_PREFETCH_MULTIPLIER", "1")
 )
 CELERY_TASK_SOFT_TIME_LIMIT = int(
     os.environ.get("CELERY_TASK_SOFT_TIME_LIMIT", "7200")
@@ -685,9 +857,7 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
 CELERY_BROKER_CONNECTION_MAX_RETRIES = 0
 
 if os.environ.get("BROKER_TYPE", "").lower() == "sqs":
-    celery_access_key = quote(os.environ.get("BROKER_AWS_ACCESS_KEY"), safe="")
-    celery_secret_key = quote(os.environ.get("BROKER_AWS_SECRET_KEY"), safe="")
-    CELERY_BROKER_URL = f"sqs://{celery_access_key}:{celery_secret_key}@"
+    CELERY_BROKER_URL = "sqs://"
 
     CELERY_WORKER_ENABLE_REMOTE_CONTROL = False
     CELERY_BROKER_USE_SSL = True
@@ -697,15 +867,57 @@ if os.environ.get("BROKER_TYPE", "").lower() == "sqs":
             "queue_name_prefix": os.environ.get(
                 "CELERY_BROKER_QUEUE_NAME_PREFIX", "gclocalhost-"
             ),
-            "region": os.environ.get("CELERY_BROKER_REGION", "eu-central-1"),
+            "region": os.environ.get(
+                "CELERY_BROKER_REGION", AWS_DEFAULT_REGION
+            ),
             "polling_interval": int(
                 os.environ.get("CELERY_BROKER_POLLING_INTERVAL", "1")
             ),
         }
     )
 else:
-    CELERY_BROKER_URL = os.environ.get("BROKER_URL", "redis://redis:6379/0")
+    CELERY_BROKER_URL = os.environ.get(
+        "BROKER_URL", f"redis://{REDIS_HOSTNAME}:6379/0"
+    )
 
+# Keep results of sent emails
+CELERY_EMAIL_CHUNK_SIZE = 1
+CELERY_EMAIL_TASK_CONFIG = {
+    "ignore_result": False,
+}
+
+COMPONENTS_DEFAULT_BACKEND = os.environ.get(
+    "COMPONENTS_DEFAULT_BACKEND",
+    "grandchallenge.components.backends.amazon_ecs.AmazonECSExecutor",
+)
+COMPONENTS_REGISTRY_URL = os.environ.get(
+    "COMPONENTS_REGISTRY_URL", "registry:5000"
+)
+COMPONENTS_REGISTRY_PREFIX = os.environ.get(
+    "COMPONENTS_REGISTRY_PREFIX", SESSION_COOKIE_DOMAIN.lstrip(".")
+)
+COMPONENTS_REGISTRY_INSECURE = strtobool(
+    os.environ.get("COMPONENTS_REGISTRY_INSECURE", "False")
+)
+COMPONENTS_MAXIMUM_IMAGE_SIZE = 10_737_418_240  # 10 gb
+COMPONENTS_AMAZON_ECS_NFS_MOUNT_POINT = os.environ.get(
+    "COMPONENTS_AMAZON_ECS_NFS_MOUNT_POINT", "/mnt/aws-batch-nfs/"
+)
+COMPONENTS_AMAZON_ECS_LOG_GROUP_NAME = os.environ.get(
+    "COMPONENTS_AMAZON_ECS_LOG_GROUP_NAME", ""
+)
+COMPONENTS_AMAZON_ECS_LOGS_REGION = os.environ.get(
+    "COMPONENTS_AMAZON_ECS_LOGS_REGION", AWS_DEFAULT_REGION
+)
+COMPONENTS_AMAZON_ECS_CPU_CLUSTER_ARN = os.environ.get(
+    "COMPONENTS_AMAZON_ECS_CPU_CLUSTER_ARN", ""
+)
+COMPONENTS_AMAZON_ECS_GPU_CLUSTER_ARN = os.environ.get(
+    "COMPONENTS_AMAZON_ECS_GPU_CLUSTER_ARN", ""
+)
+COMPONENTS_AMAZON_ECS_TASK_ROLE_ARN = os.environ.get(
+    "COMPONENTS_AMAZON_ECS_TASK_ROLE_ARN", ""
+)
 COMPONENTS_DOCKER_BASE_URL = os.environ.get(
     "COMPONENTS_DOCKER_BASE_URL", "unix://var/run/docker.sock"
 )
@@ -715,8 +927,8 @@ COMPONENTS_DOCKER_TLSVERIFY = strtobool(
 COMPONENTS_DOCKER_TLSCACERT = os.environ.get("COMPONENTS_DOCKER_TLSCACERT", "")
 COMPONENTS_DOCKER_TLSCERT = os.environ.get("COMPONENTS_DOCKER_TLSCERT", "")
 COMPONENTS_DOCKER_TLSKEY = os.environ.get("COMPONENTS_DOCKER_TLSKEY", "")
-COMPONENTS_MEMORY_LIMIT = os.environ.get("COMPONENTS_MEMORY_LIMIT", "4g")
-COMPONENTS_IO_IMAGE = "alpine:3.12"
+COMPONENTS_MEMORY_LIMIT = int(os.environ.get("COMPONENTS_MEMORY_LIMIT", "4"))
+COMPONENTS_IO_IMAGE = "alpine:3.14"
 COMPONENTS_CPU_QUOTA = int(os.environ.get("COMPONENTS_CPU_QUOTA", "100000"))
 COMPONENTS_CPU_PERIOD = int(os.environ.get("COMPONENTS_CPU_PERIOD", "100000"))
 COMPONENTS_PIDS_LIMIT = int(os.environ.get("COMPONENTS_PIDS_LIMIT", "128"))
@@ -737,6 +949,22 @@ MESSAGE_TAGS = {messages.ERROR: "danger"}
 
 # The name of the group whose members will be able to create reader studies
 READER_STUDY_CREATORS_GROUP_NAME = "reader_study_creators"
+
+###############################################################################
+#
+# workspaces
+#
+###############################################################################
+
+WORKBENCH_SECRET_KEY = os.environ.get("WORKBENCH_SECRET_KEY")
+WORKBENCH_API_URL = os.environ.get("WORKBENCH_API_URL")
+WORKBENCH_ADMIN_USERNAME = os.environ.get("WORKBENCH_ADMIN_USERNAME", "demo")
+
+###############################################################################
+#
+# workstations
+#
+###############################################################################
 
 # The workstation that is accessible by all authorised users
 DEFAULT_WORKSTATION_SLUG = os.environ.get(
@@ -760,12 +988,9 @@ WORKSTATIONS_CREATORS_GROUP_NAME = "workstation_creators"
 WORKSTATIONS_SESSION_DURATION_LIMIT = int(
     os.environ.get("WORKSTATIONS_SESSION_DURATION_LIMIT", "10000")
 )
-WORKSTATION_INTERNAL_NETWORK = strtobool(
-    os.environ.get("WORKSTATION_INTERNAL_NETWORK", "False")
-)
 # Which regions are available for workstations to run in
 WORKSTATIONS_ACTIVE_REGIONS = os.environ.get(
-    "WORKSTATIONS_ACTIVE_REGIONS", "eu-central-1"
+    "WORKSTATIONS_ACTIVE_REGIONS", AWS_DEFAULT_REGION
 ).split(",")
 WORKSTATIONS_RENDERING_SUBDOMAINS = {
     # Possible AWS regions
@@ -791,10 +1016,24 @@ WORKSTATIONS_RENDERING_SUBDOMAINS = {
     "eu-nl-1",
     "eu-nl-2",
 }
+# Number of minutes grace period before the container is stopped
+WORKSTATIONS_GRACE_MINUTES = 5
 
 CELERY_BEAT_SCHEDULE = {
+    "push_metrics_to_cloudwatch": {
+        "task": "grandchallenge.core.tasks.put_cloudwatch_metrics",
+        "schedule": timedelta(seconds=15),
+    },
     "ping_google": {
         "task": "grandchallenge.core.tasks.ping_google",
+        "schedule": timedelta(days=1),
+    },
+    "update_publication_metadata": {
+        "task": "grandchallenge.publications.tasks.update_publication_metadata",
+        "schedule": timedelta(days=1),
+    },
+    "send_unread_notification_emails": {
+        "task": "grandchallenge.notifications.tasks.send_unread_notification_emails",
         "schedule": timedelta(days=1),
     },
     "cleanup_stale_uploads": {
@@ -822,47 +1061,10 @@ CELERY_BEAT_SCHEDULE = {
                 "region": region,
             },
             "options": {"queue": f"workstations-{region}"},
-            "schedule": timedelta(minutes=5),
+            "schedule": timedelta(minutes=WORKSTATIONS_GRACE_MINUTES),
         }
         for region in WORKSTATIONS_ACTIVE_REGIONS
     },
-    # Cleanup evaluation jobs on the evaluation queue
-    "mark_long_running_evaluation_jobs_failed": {
-        "task": "grandchallenge.components.tasks.mark_long_running_jobs_failed",
-        "kwargs": {"app_label": "evaluation", "model_name": "evaluation"},
-        "options": {"queue": "evaluation"},
-        "schedule": timedelta(hours=1),
-    },
-    "mark_long_running_algorithm_gpu_jobs_failed": {
-        "task": "grandchallenge.components.tasks.mark_long_running_jobs_failed",
-        "kwargs": {
-            "app_label": "algorithms",
-            "model_name": "job",
-            "extra_filters": {"algorithm_image__requires_gpu": True},
-        },
-        "options": {"queue": "gpu"},
-        "schedule": timedelta(hours=1),
-    },
-    "mark_long_running_algorithm_jobs_failed": {
-        "task": "grandchallenge.components.tasks.mark_long_running_jobs_failed",
-        "kwargs": {
-            "app_label": "algorithms",
-            "model_name": "job",
-            "extra_filters": {"algorithm_image__requires_gpu": False},
-        },
-        "options": {"queue": "evaluation"},
-        "schedule": timedelta(hours=1),
-    },
-    "cache_retina_archive_data": {
-        "task": "grandchallenge.retina_api.tasks.cache_archive_data",
-        "schedule": timedelta(hours=1),
-    },
-}
-
-CELERY_TASK_ROUTES = {
-    "grandchallenge.components.tasks.execute_job": "evaluation",
-    "grandchallenge.components.tasks.validate_docker_image": "images",
-    "grandchallenge.cases.tasks.build_images": "images",
 }
 
 # The name of the group whose members will be able to create algorithms
@@ -895,14 +1097,31 @@ DISALLOWED_CHALLENGE_NAMES = {
 DISALLOWED_EMAIL_DOMAINS = {
     "qq.com",
     "gm.uit.edu.vn",
+    "wust.edu.cn",
     *blocklist,
 }
 
-# Modality name constants
-MODALITY_OCT = "OCT"  # Optical coherence tomography
-MODALITY_CF = "Fundus Photography"  # Color fundus photography
-MODALITY_FA = "Flurescein Angiography"  # Fluorescein angiography
-MODALITY_IR = "Infrared Reflectance Imaging"  # Infrared Reflectance imaging
+# GitHub App
+GITHUB_APP_INSTALL_URL = os.environ.get("GITHUB_APP_INSTALL_URL", "")
+GITHUB_APP_ID = os.environ.get("GITHUB_APP_ID", "")
+GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
+GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
+GITHUB_PRIVATE_KEY_BASE64 = os.environ.get("GITHUB_PRIVATE_KEY_BASE64", "")
+GITHUB_WEBHOOK_SECRET = os.environ.get("GITHUB_WEBHOOK_SECRET", "")
+
+CODEBUILD_PROJECT_NAME = os.environ.get("CODEBUILD_PROJECT_NAME", "")
+
+OPEN_SOURCE_LICENSES = [
+    "Apache License 2.0",
+    "MIT License",
+    "GNU GPLv3",
+    "GNU AGPLv3",
+    "GNU GPLv3",
+    "GNU LGPLv3",
+    "Mozilla Public License 2.0",
+    "Boost Software License 1.0",
+    "The Unlicense",
+]
 
 # Maximum file size in bytes to be opened by SimpleITK.ReadImage in cases.models.Image.get_sitk_image()
 MAX_SITK_FILE_SIZE = 268_435_456  # 256 mb
@@ -910,17 +1129,12 @@ MAX_SITK_FILE_SIZE = 268_435_456  # 256 mb
 # The maximum size of all the files in an upload session in bytes
 UPLOAD_SESSION_MAX_BYTES = 10_737_418_240  # 10 gb
 
+# The maximum size of predictions files
+PREDICTIONS_FILE_MAX_BYTES = 3_221_223_823  # 3 GB
+
 # Some forms have a lot of data, such as a reader study update view
 # that can contain reports about the medical images
 DATA_UPLOAD_MAX_MEMORY_SIZE = 16_777_216  # 16 mb
-
-# Internal format to use for metaimages
-ITK_INTERNAL_FILE_FORMAT = os.environ.get(
-    "ITK_INTERNAL_FILE_FORMAT", "mha"
-).lower()
-
-# Tile size in pixels to be used when creating dzi for tif files
-DZI_TILE_SIZE = 2560
 
 # Default maximum width or height for thumbnails in retina workstation
 RETINA_DEFAULT_THUMBNAIL_SIZE = 128
@@ -928,18 +1142,6 @@ RETINA_DEFAULT_THUMBNAIL_SIZE = 128
 # Retina specific settings
 RETINA_GRADERS_GROUP_NAME = "retina_graders"
 RETINA_ADMINS_GROUP_NAME = "retina_admins"
-RETINA_IMPORT_USER_NAME = "retina_import_user"
-RETINA_EXCEPTION_ARCHIVE = "Australia"
-RETINA_ARCHIVE_NAMES = [
-    "AREDS - GA selection",
-    "kappadata",
-    "Rotterdam_Study_1",
-    "Rotterdam Study 1",
-    "Australia",
-    "RS1",
-    "RS2",
-    "RS3",
-]
 
 ENABLE_DEBUG_TOOLBAR = False
 
@@ -959,6 +1161,9 @@ if DEBUG:
         }
     )
     DEMO_ALGORITHM_IMAGE_PATH = os.path.join(SITE_ROOT, "algorithm.tar.gz")
+    DEMO_ALGORITHM_SHA256 = "sha256:5e81cef3738b7dbffc12c101990eb3b97f17642c09a2e0b64d5b3d4dd144e79b"
+
+    del CELERY_BEAT_SCHEDULE["push_metrics_to_cloudwatch"]
 
     if ENABLE_DEBUG_TOOLBAR:
         INSTALLED_APPS += ("debug_toolbar",)

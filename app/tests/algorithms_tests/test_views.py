@@ -1,6 +1,7 @@
 import datetime
 
 import pytest
+from django.conf import settings
 from django.contrib.auth.models import Group
 from django.utils import timezone
 from django.utils.text import slugify
@@ -21,6 +22,7 @@ from tests.algorithms_tests.factories import (
 from tests.cases_tests.factories import RawImageUploadSessionFactory
 from tests.factories import StagedFileFactory, UserFactory
 from tests.utils import get_view_for_user
+from tests.verification_tests.factories import VerificationFactory
 
 
 @pytest.mark.django_db
@@ -120,6 +122,7 @@ def test_algorithm_image_create_link_view(client):
 @pytest.mark.django_db
 def test_algorithm_image_create_detail(client):
     user = UserFactory()
+    VerificationFactory(user=user, is_verified=True)
     algorithm = AlgorithmFactory()
     algorithm.add_editor(user)
 
@@ -140,7 +143,10 @@ def test_algorithm_image_create_detail(client):
         viewname="algorithms:image-create",
         reverse_kwargs={"slug": algorithm.slug},
         user=user,
-        data={"chunked_upload": algorithm_image.file_id},
+        data={
+            "chunked_upload": algorithm_image.file_id,
+            "requires_memory_gb": 24,
+        },
     )
     assert response.status_code == 302
 
@@ -448,6 +454,49 @@ def test_algorithm_jobs_list_view(client):
 
 
 @pytest.mark.django_db
+def test_algorithm_detail_flexible_inputs(client):
+    editor = UserFactory()
+
+    alg = AlgorithmFactory(use_flexible_inputs=False)
+    alg.add_editor(editor)
+    AlgorithmImageFactory(algorithm=alg, ready=True)
+
+    flexi_input_url = reverse(
+        viewname="algorithms:execution-session-create-new",
+        kwargs={"slug": alg.slug},
+    )
+
+    response = get_view_for_user(
+        viewname="algorithms:detail",
+        reverse_kwargs={"slug": slugify(alg.slug)},
+        client=client,
+        user=editor,
+        method=client.get,
+        follow=True,
+        **{"HTTP_X_REQUESTED_WITH": "XMLHttpRequest"},
+    )
+
+    assert response.status_code == 200
+    assert flexi_input_url not in response.rendered_content
+
+    alg.use_flexible_inputs = True
+    alg.save()
+
+    response = get_view_for_user(
+        viewname="algorithms:detail",
+        reverse_kwargs={"slug": slugify(alg.slug)},
+        client=client,
+        user=editor,
+        method=client.get,
+        follow=True,
+        **{"HTTP_X_REQUESTED_WITH": "XMLHttpRequest"},
+    )
+
+    assert response.status_code == 200
+    assert flexi_input_url in response.rendered_content
+
+
+@pytest.mark.django_db
 class TestObjectPermissionRequiredViews:
     def test_permission_required_views(self, client):
         ai = AlgorithmImageFactory(ready=True)
@@ -455,6 +504,8 @@ class TestObjectPermissionRequiredViews:
         u = UserFactory()
         j = AlgorithmJobFactory(algorithm_image=ai)
         p = AlgorithmPermissionRequestFactory(algorithm=ai.algorithm)
+
+        VerificationFactory(user=u, is_verified=True)
 
         for view_name, kwargs, permission, obj, redirect in [
             ("create", {}, "algorithms.add_algorithm", None, None),
@@ -504,10 +555,24 @@ class TestObjectPermissionRequiredViews:
                 None,
             ),
             (
+                "execution-session-create-new",
+                {"slug": ai.algorithm.slug},
+                "execute_algorithm",
+                ai.algorithm,
+                None,
+            ),
+            (
                 "execution-session-detail",
                 {"slug": ai.algorithm.slug, "pk": s.pk},
                 "view_rawimageuploadsession",
                 s,
+                None,
+            ),
+            (
+                "job-experiment-detail",
+                {"slug": ai.algorithm.slug, "pk": j.pk},
+                "view_job",
+                j,
                 None,
             ),
             (
@@ -614,6 +679,24 @@ class TestObjectPermissionRequiredViews:
 
 
 @pytest.mark.django_db
+class TestComponentInterfaceListView:
+    def test_login_required(self, client):
+        def _get_view(user):
+            return get_view_for_user(
+                client=client,
+                viewname="algorithms:component-interface-list",
+                user=user,
+            )
+
+        response = _get_view(user=None)
+        assert response.status_code == 302
+        assert settings.LOGIN_URL in response.url
+
+        response = _get_view(user=UserFactory())
+        assert response.status_code == 200
+
+
+@pytest.mark.django_db
 class TestJobDetailView:
     def test_guarded_content_visibility(self, client):
         j = AlgorithmJobFactory()
@@ -622,7 +705,7 @@ class TestJobDetailView:
 
         for content, permission, permission_object in [
             ("<h2>Viewers</h2>", "change_job", j),
-            ("<h2>Logs</h2>", "change_algorithm", j.algorithm_image.algorithm),
+            ("<h2>Logs</h2>", "view_logs", j),
         ]:
             view_kwargs = {
                 "client": client,

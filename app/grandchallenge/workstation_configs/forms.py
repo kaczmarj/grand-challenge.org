@@ -15,12 +15,14 @@ class WorkstationConfigForm(SaveFormInitMixin, ModelForm):
         fields = (
             "title",
             "description",
+            "image_context",
             "window_presets",
             "default_window_preset",
             "default_slab_thickness_mm",
             "default_slab_render_method",
             "default_orientation",
             "default_overlay_alpha",
+            "overlay_luts",
             "default_overlay_lut",
             "default_overlay_interpolation",
             "overlay_segments",
@@ -28,10 +30,17 @@ class WorkstationConfigForm(SaveFormInitMixin, ModelForm):
             "default_zoom_scale",
             "show_image_info_plugin",
             "show_display_plugin",
+            "show_image_switcher_plugin",
+            "show_algorithm_output_plugin",
+            "show_overlay_plugin",
             "show_invert_tool",
             "show_flip_tool",
             "show_window_level_tool",
             "show_reset_tool",
+            "show_overlay_selection_tool",
+            "show_lut_selection_tool",
+            "enable_contrast_enhancement",
+            "auto_jump_center_of_gravity",
         )
         widgets = {
             "overlay_segments": JSONEditorWidget(
@@ -49,4 +58,9 @@ class WorkstationConfigForm(SaveFormInitMixin, ModelForm):
                 'For example: [{ "voxel_value": 0, "name": "Level 0", "visible": '
                 'false, "metric_template": "{{metrics.volumes[0]}} mm³"},]'
             ),
+            "image_context": "This tells the viewer how to show the images "
+            "defined in the hanging list",
+            "window_presets": "These are the window LUT presets the viewer can choose between. "
+            "By default, none are selected. "
+            "Select multiple presets by holding CTRL or dragging your mouse",
         }

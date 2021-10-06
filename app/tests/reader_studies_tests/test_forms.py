@@ -1,11 +1,9 @@
 import html
 
 import pytest
+from actstream.actions import is_following
 from django.contrib.auth.models import Permission
 
-from grandchallenge.core.management.commands.init_gc_demo import (
-    get_temporary_image,
-)
 from grandchallenge.reader_studies.models import Answer, Question, ReaderStudy
 from tests.factories import ImageFactory, UserFactory, WorkstationFactory
 from tests.reader_studies_tests import RESOURCE_PATH
@@ -104,7 +102,7 @@ def test_reader_update_form(client):
 
 
 @pytest.mark.django_db
-def test_reader_study_create(client):
+def test_reader_study_create(client, uploaded_image):
     # The study creator should automatically get added to the editors group
     creator = get_rs_creator()
     ws = WorkstationFactory()
@@ -116,7 +114,7 @@ def test_reader_study_create(client):
             method=client.post,
             data={
                 "title": "foo bar",
-                "logo": get_temporary_image(),
+                "logo": uploaded_image(),
                 "workstation": ws.pk,
                 "allow_answer_modification": True,
                 "allow_case_navigation": allow_case_navigation,
@@ -151,6 +149,7 @@ def test_reader_study_create(client):
     assert rs.slug == "foo-bar"
     assert rs.is_editor(user=creator)
     assert not rs.is_reader(user=creator)
+    assert is_following(user=creator, obj=rs)
 
 
 @pytest.mark.django_db
@@ -208,8 +207,8 @@ def test_question_update(client):
     question = QuestionFactory(
         question_text="foo",
         reader_study=rs,
-        answer_type=Question.ANSWER_TYPE_SINGLE_LINE_TEXT,
-        direction=Question.DIRECTION_HORIZONTAL,
+        answer_type=Question.AnswerType.SINGLE_LINE_TEXT,
+        direction=Question.Direction.HORIZONTAL,
         order=100,
     )
 
@@ -236,8 +235,8 @@ def test_question_update(client):
     assert response.status_code == 200
 
     assert question.question_text == "foo"
-    assert question.answer_type == Question.ANSWER_TYPE_SINGLE_LINE_TEXT
-    assert question.direction == Question.DIRECTION_HORIZONTAL
+    assert question.answer_type == Question.AnswerType.SINGLE_LINE_TEXT
+    assert question.direction == Question.Direction.HORIZONTAL
     assert question.order == 100
 
     get_view_for_user(
@@ -246,8 +245,8 @@ def test_question_update(client):
         method=client.post,
         data={
             "question_text": "bar",
-            "answer_type": Question.ANSWER_TYPE_BOOL,
-            "direction": Question.DIRECTION_VERTICAL,
+            "answer_type": Question.AnswerType.BOOL,
+            "direction": Question.Direction.VERTICAL,
             "order": 200,
             "options-TOTAL_FORMS": 2,
             "options-INITIAL_FORMS": 1,
@@ -261,8 +260,8 @@ def test_question_update(client):
 
     question.refresh_from_db()
     assert question.question_text == "bar"
-    assert question.answer_type == Question.ANSWER_TYPE_BOOL
-    assert question.direction == Question.DIRECTION_VERTICAL
+    assert question.answer_type == Question.AnswerType.BOOL
+    assert question.direction == Question.Direction.VERTICAL
     assert question.order == 200
 
     AnswerFactory(question=question, answer="true")
@@ -274,8 +273,8 @@ def test_question_update(client):
         method=client.post,
         data={
             "question_text": "foo",
-            "answer_type": Question.ANSWER_TYPE_SINGLE_LINE_TEXT,
-            "direction": Question.DIRECTION_HORIZONTAL,
+            "answer_type": Question.AnswerType.SINGLE_LINE_TEXT,
+            "direction": Question.Direction.HORIZONTAL,
             "order": 100,
             "options-TOTAL_FORMS": 2,
             "options-INITIAL_FORMS": 1,
@@ -289,8 +288,8 @@ def test_question_update(client):
 
     question.refresh_from_db()
     assert question.question_text == "bar"
-    assert question.answer_type == Question.ANSWER_TYPE_BOOL
-    assert question.direction == Question.DIRECTION_HORIZONTAL
+    assert question.answer_type == Question.AnswerType.BOOL
+    assert question.direction == Question.Direction.HORIZONTAL
     assert question.order == 100
 
 
@@ -358,12 +357,12 @@ def test_reader_study_copy(client):
     rs.add_editor(editor2)
     QuestionFactory(
         reader_study=rs,
-        answer_type=Question.ANSWER_TYPE_BOOL,
+        answer_type=Question.AnswerType.BOOL,
         question_text="q1",
     ),
     QuestionFactory(
         reader_study=rs,
-        answer_type=Question.ANSWER_TYPE_BOOL,
+        answer_type=Question.AnswerType.BOOL,
         question_text="q2",
     )
 
@@ -584,10 +583,11 @@ def test_reader_study_delete(client):
     rs = ReaderStudyFactory()
     editor = UserFactory()
     reader = UserFactory()
-    rs.editors_group.user_set.add(editor)
-    rs.readers_group.user_set.add(reader)
+    rs.add_editor(editor)
+    rs.add_reader(reader)
 
     assert ReaderStudy.objects.count() == 1
+    assert is_following(user=editor, obj=rs)
 
     response = get_view_for_user(
         viewname="reader-studies:delete",
@@ -624,6 +624,7 @@ def test_reader_study_delete(client):
 
     assert response.status_code == 200
     assert ReaderStudy.objects.count() == 0
+    assert not is_following(user=editor, obj=rs)
 
 
 @pytest.mark.django_db
@@ -635,22 +636,22 @@ def test_reader_study_add_ground_truth(client, settings):
     q = QuestionFactory(
         reader_study=rs,
         question_text="bar",
-        answer_type=Question.ANSWER_TYPE_SINGLE_LINE_TEXT,
+        answer_type=Question.AnswerType.SINGLE_LINE_TEXT,
     )
     q0 = QuestionFactory(
         reader_study=rs,
         question_text="bool",
-        answer_type=Question.ANSWER_TYPE_BOOL,
+        answer_type=Question.AnswerType.BOOL,
     )
     q1 = QuestionFactory(
         reader_study=rs,
         question_text="choice",
-        answer_type=Question.ANSWER_TYPE_CHOICE,
+        answer_type=Question.AnswerType.CHOICE,
     )
     q2 = QuestionFactory(
         reader_study=rs,
         question_text="mchoice",
-        answer_type=Question.ANSWER_TYPE_MULTIPLE_CHOICE,
+        answer_type=Question.AnswerType.MULTIPLE_CHOICE,
     )
     options = {}
     for i, q_ in enumerate([q1, q2]):

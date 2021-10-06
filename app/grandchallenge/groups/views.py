@@ -1,7 +1,6 @@
 from dal import autocomplete
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.contrib.auth.mixins import UserPassesTestMixin
 from django.contrib.messages.views import SuccessMessageMixin
 from django.db.models import CharField, Q, Value
 from django.db.models.functions import Concat
@@ -11,7 +10,6 @@ from guardian.mixins import (
     LoginRequiredMixin,
     PermissionRequiredMixin as ObjectPermissionRequiredMixin,
 )
-from guardian.shortcuts import get_objects_for_user
 
 from grandchallenge.verifications.models import Verification
 
@@ -44,24 +42,7 @@ class UserGroupUpdateMixin(
         return super().form_valid(form)
 
 
-class UserAutocomplete(
-    LoginRequiredMixin, UserPassesTestMixin, autocomplete.Select2QuerySetView
-):
-    def test_func(self):
-        allowed_perms = [
-            "algorithms.change_algorithm",
-            "organizations.change_organization",
-            "archives.change_archive",
-            "reader_studies.change_readerstudy",
-            "workstations.change_workstation",
-            "algorithms.change_job",
-        ]
-        # TODO reduce number of queries
-        return any(
-            get_objects_for_user(user=self.request.user, perms=perm,).exists()
-            for perm in allowed_perms
-        )
-
+class UserAutocomplete(LoginRequiredMixin, autocomplete.Select2QuerySetView):
     def get_queryset(self):
         qs = (
             get_user_model()
@@ -97,7 +78,7 @@ class UserAutocomplete(
 
         if is_verified:
             return format_html(
-                '<img src="{}" width ="20" height ="20" style="vertical-align:top"> '
+                '<img class="rounded-circle align-middle" src="{}" width ="20" height ="20"> '
                 "&nbsp; <b>{}</b> &nbsp; {} &nbsp;"
                 '<i class="fas fa-user-check text-success"></i>'
                 "&nbsp;Verified email address at {}",
@@ -108,7 +89,7 @@ class UserAutocomplete(
             )
         else:
             return format_html(
-                '<img src="{}" width ="20" height ="20" style="vertical-align:top"> '
+                '<img class="rounded-circle align-middle" src="{}" width ="20" height ="20"> '
                 "&nbsp; <b>{}</b> &nbsp; {}",
                 result.user_profile.get_mugshot_url(),
                 result.get_username(),

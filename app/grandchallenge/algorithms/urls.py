@@ -1,10 +1,12 @@
 from django.urls import path
 
 from grandchallenge.algorithms.views import (
+    AlgorithmAddRepo,
     AlgorithmCreate,
     AlgorithmDetail,
     AlgorithmExecutionSessionCreate,
     AlgorithmExecutionSessionDetail,
+    AlgorithmExperimentCreate,
     AlgorithmImageCreate,
     AlgorithmImageDetail,
     AlgorithmImageUpdate,
@@ -13,8 +15,10 @@ from grandchallenge.algorithms.views import (
     AlgorithmPermissionRequestList,
     AlgorithmPermissionRequestUpdate,
     AlgorithmUpdate,
+    ComponentInterfaceList,
     EditorsUpdate,
     JobDetail,
+    JobExperimentDetail,
     JobUpdate,
     JobViewersUpdate,
     JobsList,
@@ -26,8 +30,14 @@ app_name = "algorithms"
 urlpatterns = [
     path("", AlgorithmList.as_view(), name="list"),
     path("create/", AlgorithmCreate.as_view(), name="create"),
+    path(
+        "interfaces/",
+        ComponentInterfaceList.as_view(),
+        name="component-interface-list",
+    ),
     path("<slug>/", AlgorithmDetail.as_view(), name="detail"),
     path("<slug>/update/", AlgorithmUpdate.as_view(), name="update"),
+    path("<slug>/add-repo/", AlgorithmAddRepo.as_view(), name="add-repo"),
     path(
         "<slug>/images/create/",
         AlgorithmImageCreate.as_view(),
@@ -49,6 +59,11 @@ urlpatterns = [
         name="execution-session-create",
     ),
     path(
+        "<slug>/experiments/create/flex/",
+        AlgorithmExperimentCreate.as_view(),
+        name="execution-session-create-new",
+    ),
+    path(
         "<slug>/experiments/<uuid:pk>/",
         AlgorithmExecutionSessionDetail.as_view(),
         name="execution-session-detail",
@@ -59,6 +74,11 @@ urlpatterns = [
         "<slug>/jobs/<uuid:pk>/update/",
         JobUpdate.as_view(),
         name="job-update",
+    ),
+    path(
+        "<slug>/jobs/<uuid:pk>/experiment/",
+        JobExperimentDetail.as_view(),
+        name="job-experiment-detail",
     ),
     path(
         "<slug>/jobs/<uuid:pk>/viewers/update/",

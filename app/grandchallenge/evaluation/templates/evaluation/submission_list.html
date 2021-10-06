@@ -1,4 +1,4 @@
-{% extends "challenge.html" %}
+{% extends "base.html" %}
 {% load url %}
 {% load profiles %}
 
@@ -11,6 +11,12 @@
                 href="{{ challenge.get_absolute_url }}">{% firstof challenge.title challenge.short_name %}</a></li>
         <li class="breadcrumb-item active" aria-current="page">Submissions</li>
     </ol>
+{% endblock %}
+
+{% block topbar2 %}
+    {% if "change_challenge" in challenge_perms or user_is_participant %}
+        {% include "evaluation/partials/phase_navbar.html" with submission_nav=True %}
+    {% endif %}
 {% endblock %}
 
 {% block content %}
@@ -39,16 +45,10 @@
                     <td>{{ submission.comment }}</td>
                     <td>
                         {% for evaluation in submission.evaluation_set.all %}
-                            <span class="badge
-                                {% if evaluation.status == evaluation.FAILURE or evaluation.status == evaluation.CANCELLED %}
-                                    badge-danger
-                                {% elif evaluation.status == evaluation.RETRY %}
-                                    badge-warning
-                                {% elif evaluation.status == evaluation.SUCCESS %}
-                                    badge-success
-                                {% else %}
-                                    badge-info
-                                {% endif %}">
+                            <span class="badge badge-{{ evaluation.status_context }}">
+                                {% if evaluation.animate %}
+                                    <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                                {% endif %}
                                 {{ evaluation.get_status_display }}
                             </span>
                             {% if evaluation.status == evaluation.SUCCESS %}
@@ -57,8 +57,12 @@
                                 {% else %}
                                     Evaluation is under review by the challenge admins.
                                 {% endif %}
-                            {% elif evaluation.FAILURE %}
+                            {% elif evaluation.status == evaluation.FAILURE %}
                                 {% firstof evaluation.error_message evaluation.get_status_display %}
+                            {% endif %}
+                        {% empty %}
+                            {% if submission.staged_predictions_file_uuid and not submission.predictions_file %}
+                                <span class="badge badge-info">Preparing</span>
                             {% endif %}
                         {% endfor %}
                     </td>

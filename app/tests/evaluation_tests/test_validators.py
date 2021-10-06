@@ -5,13 +5,13 @@ from django.core.exceptions import ValidationError
 
 from grandchallenge.core.validators import (
     ExtensionValidator,
-    JSONSchemaValidator,
+    JSONValidator,
     MimeTypeValidator,
 )
 
 
 @dataclass
-class FakeFile(object):
+class FakeFile:
     name: str
 
 
@@ -64,14 +64,14 @@ def test_json_validator():
         },
     }
 
-    json_validator = JSONSchemaValidator(schema=schema)
+    json_validator = JSONValidator(schema=schema)
 
     assert json_validator({"name": "Eggs", "price": 34.99}) is None
     with pytest.raises(ValidationError):
         json_validator({"name": "Eggs", "price": "invalid"})
 
-    assert json_validator == JSONSchemaValidator(schema=schema)
-    assert json_validator != JSONSchemaValidator(
+    assert json_validator == JSONValidator(schema=schema)
+    assert json_validator != JSONValidator(
         schema={"type": "object", "properties": {"name": {"type": "string"}}}
     )
-    assert json_validator is not JSONSchemaValidator(schema=schema)
+    assert json_validator is not JSONValidator(schema=schema)

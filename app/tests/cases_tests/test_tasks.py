@@ -1,5 +1,6 @@
 import pytest
 from celery import shared_task
+from django_capture_on_commit_callbacks import capture_on_commit_callbacks
 
 from tests.factories import UploadSessionFactory
 
@@ -18,13 +19,7 @@ def test_linked_task_called_with_session_pk(settings):
 
     session = UploadSessionFactory()
 
-    session.process_images()
-
-    assert called == {}
-
-    session.status = session.REQUEUED
-    session.save()
-
-    session.process_images(linked_task=local_linked_task.signature())
+    with capture_on_commit_callbacks(execute=True):
+        session.process_images(linked_task=local_linked_task.signature())
 
     assert called == {"upload_session_pk": session.pk}

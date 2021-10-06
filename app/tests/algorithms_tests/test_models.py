@@ -1,12 +1,16 @@
+from datetime import timedelta
+
 import pytest
 from django.core.exceptions import ObjectDoesNotExist
+from django.db.models import ProtectedError
 from django.test import TestCase
+from django.utils import timezone
 
 from grandchallenge.algorithms.models import Algorithm, Job
 from grandchallenge.components.models import (
     ComponentInterface,
     ComponentInterfaceValue,
-    InterfaceKindChoices,
+    InterfaceKind,
 )
 from tests.algorithms_tests.factories import (
     AlgorithmFactory,
@@ -42,26 +46,20 @@ def test_group_deletion_reverse(group):
     assert users_group
     assert editors_group
 
-    getattr(algorithm, group).delete()
-
-    with pytest.raises(ObjectDoesNotExist):
-        users_group.refresh_from_db()
-
-    with pytest.raises(ObjectDoesNotExist):
-        editors_group.refresh_from_db()
-
-    with pytest.raises(ObjectDoesNotExist):
-        algorithm.refresh_from_db()
+    with pytest.raises(ProtectedError):
+        getattr(algorithm, group).delete()
 
 
 @pytest.mark.django_db
 def test_default_interfaces_created():
     a = AlgorithmFactory()
 
-    assert {i.kind for i in a.inputs.all()} == {InterfaceKindChoices.IMAGE}
+    assert {i.kind for i in a.inputs.all()} == {
+        InterfaceKind.InterfaceKindChoices.IMAGE
+    }
     assert {o.kind for o in a.outputs.all()} == {
-        InterfaceKindChoices.JSON,
-        InterfaceKindChoices.HEAT_MAP,
+        InterfaceKind.InterfaceKindChoices.ANY,
+        InterfaceKind.InterfaceKindChoices.HEAT_MAP,
     }
 
 
@@ -82,7 +80,7 @@ def test_rendered_result_text():
 
     job = AlgorithmJobFactory()
     job.algorithm_image.algorithm.result_template = (
-        "foo score: {{result_dict.foo}}"
+        "foo score: {{results.foo}}"
     )
 
     assert job.rendered_result_text == ""
@@ -97,6 +95,41 @@ def test_rendered_result_text():
     job.algorithm_image.algorithm.result_template = "{{ str.__add__('test')}}"
     del job.rendered_result_text
     assert job.rendered_result_text == "Jinja template is invalid"
+
+
+@pytest.mark.django_db
+def test_average_duration():
+    alg = AlgorithmFactory()
+    now = timezone.now()
+
+    assert alg.average_duration is None
+
+    j = AlgorithmJobFactory(algorithm_image__algorithm=alg)
+
+    j.started_at = now - timedelta(minutes=5)
+    j.completed_at = now
+    j.status = j.SUCCESS
+    j.save()
+
+    assert alg.average_duration == timedelta(minutes=5)
+
+    # Unsuccessful jobs should not count
+    j = AlgorithmJobFactory(algorithm_image__algorithm=alg)
+    j.started_at = now - timedelta(minutes=10)
+    j.completed_at = now
+    j.status = j.FAILURE
+    j.save()
+
+    assert alg.average_duration == timedelta(minutes=5)
+
+    # Nor should jobs for other algorithms
+    j = AlgorithmJobFactory()
+    j.started_at = now - timedelta(minutes=15)
+    j.completed_at = now
+    j.status = j.SUCCESS
+    j.save()
+
+    assert alg.average_duration == timedelta(minutes=5)
 
 
 class TestAlgorithmJobGroups(TestCase):
@@ -119,10 +152,8 @@ class TestAlgorithmJobGroups(TestCase):
         j = AlgorithmJobFactory()
         g = j.viewers
 
-        g.delete()
-
-        with pytest.raises(ObjectDoesNotExist):
-            j.refresh_from_db()
+        with pytest.raises(ProtectedError):
+            g.delete()
 
     def test_creator_in_viewers_group(self):
         j = AlgorithmJobFactory()
@@ -130,6 +161,4 @@ class TestAlgorithmJobGroups(TestCase):
 
     def test_viewer_group_in_m2m(self):
         j = AlgorithmJobFactory()
-        assert {*j.viewer_groups.all()} == {
-            j.viewers,
-        }
+        assert {*j.viewer_groups.all()} == {j.viewers}

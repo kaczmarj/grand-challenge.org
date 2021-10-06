@@ -13,13 +13,14 @@ from django.shortcuts import get_object_or_404
 from django.templatetags.static import static
 from django.views.generic import TemplateView, UpdateView
 from guardian.mixins import (
+    LoginRequiredMixin,
     PermissionRequiredMixin as ObjectPermissionRequiredMixin,
 )
 
 from grandchallenge.algorithms.models import Algorithm
+from grandchallenge.blogs.models import Post
 from grandchallenge.challenges.models import Challenge
-from grandchallenge.core.permissions.mixins import UserIsNotAnonMixin
-from grandchallenge.subdomains.utils import reverse
+from grandchallenge.subdomains.utils import reverse, reverse_lazy
 
 
 @dataclass
@@ -118,6 +119,25 @@ class HomeTemplate(TemplateView):
             ),
         ]
 
+        latest_news_item = Post.objects.filter(highlight=True).first()
+        latest_ai_for_radiology_post = Post.objects.filter(
+            published=True, tags__slug="products"
+        ).first()
+        latest_gc_blog_post = (
+            Post.objects.filter(published=True)
+            .exclude(tags__slug="products", highlight=True)
+            .first()
+        )
+        news_caroussel_items = [
+            latest_ai_for_radiology_post,
+            latest_gc_blog_post,
+        ]
+        news_caroussel_items = (
+            [latest_news_item] + news_caroussel_items
+            if latest_news_item
+            else news_caroussel_items
+        )
+
         context.update(
             {
                 "all_users": get_user_model().objects.all(),
@@ -130,13 +150,25 @@ class HomeTemplate(TemplateView):
                     "A platform for end-to-end development of machine "
                     "learning solutions in biomedical imaging."
                 ),
+                "highlighted_challenges": Challenge.objects.filter(
+                    hidden=False, highlight=True
+                )
+                .order_by("-created")
+                .all()[:4],
+                "highlighted_algorithms": Algorithm.objects.filter(
+                    public=True, highlight=True
+                )
+                .order_by("-created")
+                .all()[:4],
+                "news_caroussel_items": news_caroussel_items,
+                "latest_news_item": latest_news_item,
             }
         )
         return context
 
 
 class PermissionRequestUpdate(
-    UserIsNotAnonMixin,
+    LoginRequiredMixin,
     SuccessMessageMixin,
     ObjectPermissionRequiredMixin,
     UpdateView,
@@ -148,6 +180,7 @@ class PermissionRequestUpdate(
     # Checks on whether the permission request user is in these groups
     user_check_attrs = ["is_user", "is_editor"]
     raise_exception = True
+    login_url = reverse_lazy("account_login")
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -203,3 +236,7 @@ class PermissionRequestUpdate(
             f"{self.redirect_namespace}:permission-request-list",
             kwargs={"slug": self.base_object.slug},
         )
+
+
+class AboutTemplate(TemplateView):
+    template_name = "about.html"

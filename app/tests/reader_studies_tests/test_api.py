@@ -1,13 +1,11 @@
-import csv
 import re
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
 import pytest
+from django_capture_on_commit_callbacks import capture_on_commit_callbacks
 
 from grandchallenge.reader_studies.models import Answer, Question
-from grandchallenge.reader_studies.views import ExportCSVMixin
 from tests.cases_tests.factories import (
     RawImageFileFactory,
     RawImageUploadSessionFactory,
@@ -82,7 +80,7 @@ def test_answer_create(client):
     reader = UserFactory()
     rs.add_reader(reader)
 
-    q = QuestionFactory(reader_study=rs, answer_type=Question.ANSWER_TYPE_BOOL)
+    q = QuestionFactory(reader_study=rs, answer_type=Question.AnswerType.BOOL)
 
     response = get_view_for_user(
         viewname="api:reader-studies-answer-list",
@@ -117,7 +115,7 @@ def test_answer_update(client):
     editor = UserFactory()
     rs.add_editor(editor)
 
-    q = QuestionFactory(reader_study=rs, answer_type=Question.ANSWER_TYPE_BOOL)
+    q = QuestionFactory(reader_study=rs, answer_type=Question.AnswerType.BOOL)
 
     response = get_view_for_user(
         viewname="api:reader-studies-answer-list",
@@ -217,7 +215,7 @@ def test_answer_creator_is_reader(client):
     rs_set.rs1.images.add(im)
 
     q = QuestionFactory(
-        reader_study=rs_set.rs1, answer_type=Question.ANSWER_TYPE_BOOL
+        reader_study=rs_set.rs1, answer_type=Question.AnswerType.BOOL
     )
 
     tests = (
@@ -248,29 +246,29 @@ def test_answer_creator_is_reader(client):
 @pytest.mark.parametrize(
     "answer_type,answer,expected",
     (
-        (Question.ANSWER_TYPE_BOOL, True, 201),
-        (Question.ANSWER_TYPE_BOOL, "True", 400),
-        (Question.ANSWER_TYPE_BOOL, 12, 400),
-        (Question.ANSWER_TYPE_NUMBER, 12, 201),
-        (Question.ANSWER_TYPE_NUMBER, "12", 400),
-        (Question.ANSWER_TYPE_NUMBER, True, 400),
-        (Question.ANSWER_TYPE_SINGLE_LINE_TEXT, "dgfsgfds", 201),
-        (Question.ANSWER_TYPE_SINGLE_LINE_TEXT, True, 400),
-        (Question.ANSWER_TYPE_SINGLE_LINE_TEXT, 12, 400),
-        (Question.ANSWER_TYPE_MULTI_LINE_TEXT, "dgfsgfds", 201),
-        (Question.ANSWER_TYPE_MULTI_LINE_TEXT, True, 400),
-        (Question.ANSWER_TYPE_MULTI_LINE_TEXT, 12, 400),
-        (Question.ANSWER_TYPE_HEADING, True, 400),
-        (Question.ANSWER_TYPE_HEADING, "null", 400),
-        (Question.ANSWER_TYPE_HEADING, None, 400),
-        (Question.ANSWER_TYPE_2D_BOUNDING_BOX, "", 400),
-        (Question.ANSWER_TYPE_2D_BOUNDING_BOX, True, 400),
-        (Question.ANSWER_TYPE_2D_BOUNDING_BOX, False, 400),
-        (Question.ANSWER_TYPE_2D_BOUNDING_BOX, 134, 400),
-        (Question.ANSWER_TYPE_2D_BOUNDING_BOX, "dsfuag", 400),
-        (Question.ANSWER_TYPE_2D_BOUNDING_BOX, {}, 400),
+        (Question.AnswerType.BOOL, True, 201),
+        (Question.AnswerType.BOOL, "True", 400),
+        (Question.AnswerType.BOOL, 12, 400),
+        (Question.AnswerType.NUMBER, 12, 201),
+        (Question.AnswerType.NUMBER, "12", 400),
+        (Question.AnswerType.NUMBER, True, 400),
+        (Question.AnswerType.SINGLE_LINE_TEXT, "dgfsgfds", 201),
+        (Question.AnswerType.SINGLE_LINE_TEXT, True, 400),
+        (Question.AnswerType.SINGLE_LINE_TEXT, 12, 400),
+        (Question.AnswerType.MULTI_LINE_TEXT, "dgfsgfds", 201),
+        (Question.AnswerType.MULTI_LINE_TEXT, True, 400),
+        (Question.AnswerType.MULTI_LINE_TEXT, 12, 400),
+        (Question.AnswerType.HEADING, True, 400),
+        (Question.AnswerType.HEADING, "null", 400),
+        (Question.AnswerType.HEADING, None, 400),
+        (Question.AnswerType.BOUNDING_BOX_2D, "", 400),
+        (Question.AnswerType.BOUNDING_BOX_2D, True, 400),
+        (Question.AnswerType.BOUNDING_BOX_2D, False, 400),
+        (Question.AnswerType.BOUNDING_BOX_2D, 134, 400),
+        (Question.AnswerType.BOUNDING_BOX_2D, "dsfuag", 400),
+        (Question.AnswerType.BOUNDING_BOX_2D, {}, 400),
         (
-            Question.ANSWER_TYPE_2D_BOUNDING_BOX,
+            Question.AnswerType.BOUNDING_BOX_2D,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "2D bounding box",
@@ -280,7 +278,7 @@ def test_answer_creator_is_reader(client):
             201,
         ),
         (
-            Question.ANSWER_TYPE_2D_BOUNDING_BOX,
+            Question.AnswerType.BOUNDING_BOX_2D,
             {
                 "type": "2D bounding box",
                 "name": "test_name",
@@ -289,7 +287,7 @@ def test_answer_creator_is_reader(client):
             400,
         ),
         (
-            Question.ANSWER_TYPE_2D_BOUNDING_BOX,
+            Question.AnswerType.BOUNDING_BOX_2D,
             {
                 "version": {"major": 1, "minor": 0},
                 "name": "test_name",
@@ -298,18 +296,18 @@ def test_answer_creator_is_reader(client):
             400,
         ),
         (
-            Question.ANSWER_TYPE_2D_BOUNDING_BOX,
+            Question.AnswerType.BOUNDING_BOX_2D,
             '{"version": {"major": 1, "minor": 0}, "type": "2D bounding box", "name": "test_name", "corners": [[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 0, 0]]}',
             400,
         ),  # Valid json, but a string
-        (Question.ANSWER_TYPE_MULTIPLE_2D_BOUNDING_BOXES, "", 400),
-        (Question.ANSWER_TYPE_MULTIPLE_2D_BOUNDING_BOXES, True, 400),
-        (Question.ANSWER_TYPE_MULTIPLE_2D_BOUNDING_BOXES, False, 400),
-        (Question.ANSWER_TYPE_MULTIPLE_2D_BOUNDING_BOXES, 134, 400),
-        (Question.ANSWER_TYPE_MULTIPLE_2D_BOUNDING_BOXES, "dsfuag", 400),
-        (Question.ANSWER_TYPE_MULTIPLE_2D_BOUNDING_BOXES, {}, 400),
+        (Question.AnswerType.MULTIPLE_2D_BOUNDING_BOXES, "", 400),
+        (Question.AnswerType.MULTIPLE_2D_BOUNDING_BOXES, True, 400),
+        (Question.AnswerType.MULTIPLE_2D_BOUNDING_BOXES, False, 400),
+        (Question.AnswerType.MULTIPLE_2D_BOUNDING_BOXES, 134, 400),
+        (Question.AnswerType.MULTIPLE_2D_BOUNDING_BOXES, "dsfuag", 400),
+        (Question.AnswerType.MULTIPLE_2D_BOUNDING_BOXES, {}, 400),
         (
-            Question.ANSWER_TYPE_MULTIPLE_2D_BOUNDING_BOXES,
+            Question.AnswerType.MULTIPLE_2D_BOUNDING_BOXES,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Multiple 2D bounding boxes",
@@ -328,7 +326,7 @@ def test_answer_creator_is_reader(client):
             201,
         ),
         (
-            Question.ANSWER_TYPE_MULTIPLE_2D_BOUNDING_BOXES,
+            Question.AnswerType.MULTIPLE_2D_BOUNDING_BOXES,
             {
                 "type": "2D bounding box",
                 "name": "test_name",
@@ -337,7 +335,7 @@ def test_answer_creator_is_reader(client):
             400,
         ),
         (
-            Question.ANSWER_TYPE_MULTIPLE_2D_BOUNDING_BOXES,
+            Question.AnswerType.MULTIPLE_2D_BOUNDING_BOXES,
             {
                 "version": {"major": 1, "minor": 0},
                 "name": "test_name",
@@ -355,7 +353,7 @@ def test_answer_creator_is_reader(client):
             400,
         ),
         (
-            Question.ANSWER_TYPE_MULTIPLE_2D_BOUNDING_BOXES,
+            Question.AnswerType.MULTIPLE_2D_BOUNDING_BOXES,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Multiple 2D bounding boxes",
@@ -382,7 +380,7 @@ def test_answer_creator_is_reader(client):
             201,
         ),
         (
-            Question.ANSWER_TYPE_DISTANCE_MEASUREMENT,
+            Question.AnswerType.DISTANCE_MEASUREMENT,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Distance measurement",
@@ -393,7 +391,7 @@ def test_answer_creator_is_reader(client):
             201,
         ),
         (
-            Question.ANSWER_TYPE_DISTANCE_MEASUREMENT,
+            Question.AnswerType.DISTANCE_MEASUREMENT,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Distance measurement",
@@ -403,7 +401,7 @@ def test_answer_creator_is_reader(client):
             400,
         ),
         (
-            Question.ANSWER_TYPE_MULTIPLE_DISTANCE_MEASUREMENTS,
+            Question.AnswerType.MULTIPLE_DISTANCE_MEASUREMENTS,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Multiple distance measurements",
@@ -412,7 +410,7 @@ def test_answer_creator_is_reader(client):
             201,
         ),
         (
-            Question.ANSWER_TYPE_MULTIPLE_DISTANCE_MEASUREMENTS,
+            Question.AnswerType.MULTIPLE_DISTANCE_MEASUREMENTS,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Multiple distance measurements",
@@ -425,7 +423,7 @@ def test_answer_creator_is_reader(client):
             201,
         ),
         (
-            Question.ANSWER_TYPE_MULTIPLE_DISTANCE_MEASUREMENTS,
+            Question.AnswerType.MULTIPLE_DISTANCE_MEASUREMENTS,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Multiple distance measurements",
@@ -435,7 +433,7 @@ def test_answer_creator_is_reader(client):
             201,
         ),
         (
-            Question.ANSWER_TYPE_MULTIPLE_DISTANCE_MEASUREMENTS,
+            Question.AnswerType.MULTIPLE_DISTANCE_MEASUREMENTS,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Distance measurements",
@@ -445,7 +443,7 @@ def test_answer_creator_is_reader(client):
             400,
         ),
         (
-            Question.ANSWER_TYPE_MULTIPLE_DISTANCE_MEASUREMENTS,
+            Question.AnswerType.MULTIPLE_DISTANCE_MEASUREMENTS,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Multiple distance measurements",
@@ -455,7 +453,7 @@ def test_answer_creator_is_reader(client):
             400,
         ),
         (
-            Question.ANSWER_TYPE_MULTIPLE_DISTANCE_MEASUREMENTS,
+            Question.AnswerType.MULTIPLE_DISTANCE_MEASUREMENTS,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Multiple distance measurements",
@@ -468,7 +466,7 @@ def test_answer_creator_is_reader(client):
             400,
         ),
         (
-            Question.ANSWER_TYPE_MULTIPLE_DISTANCE_MEASUREMENTS,
+            Question.AnswerType.MULTIPLE_DISTANCE_MEASUREMENTS,
             {
                 "type": "Multiple distance measurements",
                 "lines": [{"start": (1, 2, 3), "end": (4, 5, 6)}],
@@ -476,7 +474,7 @@ def test_answer_creator_is_reader(client):
             400,
         ),
         (
-            Question.ANSWER_TYPE_POINT,
+            Question.AnswerType.POINT,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Point",
@@ -486,7 +484,7 @@ def test_answer_creator_is_reader(client):
             201,
         ),
         (
-            Question.ANSWER_TYPE_POINT,
+            Question.AnswerType.POINT,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Point",
@@ -496,7 +494,7 @@ def test_answer_creator_is_reader(client):
             400,
         ),
         (
-            Question.ANSWER_TYPE_MULTIPLE_POINTS,
+            Question.AnswerType.MULTIPLE_POINTS,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Multiple points",
@@ -506,7 +504,7 @@ def test_answer_creator_is_reader(client):
             201,
         ),
         (
-            Question.ANSWER_TYPE_MULTIPLE_POINTS,
+            Question.AnswerType.MULTIPLE_POINTS,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Multiple points",
@@ -516,7 +514,7 @@ def test_answer_creator_is_reader(client):
             400,
         ),
         (
-            Question.ANSWER_TYPE_POLYGON,
+            Question.AnswerType.POLYGON,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Polygon",
@@ -529,7 +527,7 @@ def test_answer_creator_is_reader(client):
             201,
         ),
         (
-            Question.ANSWER_TYPE_POLYGON,
+            Question.AnswerType.POLYGON,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Polygon",
@@ -541,7 +539,7 @@ def test_answer_creator_is_reader(client):
             400,
         ),
         (
-            Question.ANSWER_TYPE_POLYGON,
+            Question.AnswerType.POLYGON,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Polygon",
@@ -553,7 +551,7 @@ def test_answer_creator_is_reader(client):
             400,
         ),
         (
-            Question.ANSWER_TYPE_POLYGON,
+            Question.AnswerType.POLYGON,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Polygon",
@@ -565,7 +563,7 @@ def test_answer_creator_is_reader(client):
             400,
         ),
         (
-            Question.ANSWER_TYPE_POLYGON,
+            Question.AnswerType.POLYGON,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Polygon",
@@ -577,7 +575,7 @@ def test_answer_creator_is_reader(client):
             400,
         ),
         (
-            Question.ANSWER_TYPE_MULTIPLE_POLYGONS,
+            Question.AnswerType.MULTIPLE_POLYGONS,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Multiple polygons",
@@ -595,7 +593,7 @@ def test_answer_creator_is_reader(client):
             201,
         ),
         (
-            Question.ANSWER_TYPE_MULTIPLE_POLYGONS,
+            Question.AnswerType.MULTIPLE_POLYGONS,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Multiple polygons",
@@ -609,24 +607,24 @@ def test_answer_creator_is_reader(client):
                     }
                 ],
             },
-            400,
+            201,
         ),
-        (Question.ANSWER_TYPE_SINGLE_LINE_TEXT, None, 400),
-        (Question.ANSWER_TYPE_MULTI_LINE_TEXT, None, 400),
-        (Question.ANSWER_TYPE_BOOL, None, 400),
-        (Question.ANSWER_TYPE_NUMBER, None, 400),
-        (Question.ANSWER_TYPE_HEADING, None, 400),
-        (Question.ANSWER_TYPE_2D_BOUNDING_BOX, None, 201),
-        (Question.ANSWER_TYPE_MULTIPLE_2D_BOUNDING_BOXES, None, 201),
-        (Question.ANSWER_TYPE_DISTANCE_MEASUREMENT, None, 201),
-        (Question.ANSWER_TYPE_MULTIPLE_DISTANCE_MEASUREMENTS, None, 201),
-        (Question.ANSWER_TYPE_POINT, None, 201),
-        (Question.ANSWER_TYPE_MULTIPLE_POINTS, None, 201),
-        (Question.ANSWER_TYPE_POLYGON, None, 201),
-        (Question.ANSWER_TYPE_MULTIPLE_POLYGONS, None, 201),
-        (Question.ANSWER_TYPE_CHOICE, None, 400),
-        (Question.ANSWER_TYPE_MULTIPLE_CHOICE, None, 400),
-        (Question.ANSWER_TYPE_MULTIPLE_CHOICE_DROPDOWN, None, 400),
+        (Question.AnswerType.SINGLE_LINE_TEXT, None, 400),
+        (Question.AnswerType.MULTI_LINE_TEXT, None, 400),
+        (Question.AnswerType.BOOL, None, 400),
+        (Question.AnswerType.NUMBER, None, 400),
+        (Question.AnswerType.HEADING, None, 400),
+        (Question.AnswerType.BOUNDING_BOX_2D, None, 201),
+        (Question.AnswerType.MULTIPLE_2D_BOUNDING_BOXES, None, 201),
+        (Question.AnswerType.DISTANCE_MEASUREMENT, None, 201),
+        (Question.AnswerType.MULTIPLE_DISTANCE_MEASUREMENTS, None, 201),
+        (Question.AnswerType.POINT, None, 201),
+        (Question.AnswerType.MULTIPLE_POINTS, None, 201),
+        (Question.AnswerType.POLYGON, None, 201),
+        (Question.AnswerType.MULTIPLE_POLYGONS, None, 201),
+        (Question.AnswerType.CHOICE, None, 400),
+        (Question.AnswerType.MULTIPLE_CHOICE, None, 400),
+        (Question.AnswerType.MULTIPLE_CHOICE_DROPDOWN, None, 400),
     ),
 )
 def test_answer_is_correct_type(client, answer_type, answer, expected):
@@ -653,6 +651,47 @@ def test_answer_is_correct_type(client, answer_type, answer, expected):
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize(
+    "answer_type", (Question.AnswerType.CHOICE, Question.AnswerType.NUMBER),
+)
+def test_only_non_required_can_be_null(client, answer_type):
+    im = ImageFactory()
+    rs = ReaderStudyFactory()
+    rs.images.add(im)
+    rs.save()
+    reader = UserFactory()
+    rs.add_reader(reader)
+
+    q = QuestionFactory(
+        reader_study=rs, answer_type=answer_type, required=True
+    )
+
+    response = get_view_for_user(
+        viewname="api:reader-studies-answer-list",
+        user=reader,
+        client=client,
+        method=client.post,
+        data={"answer": None, "images": [im.api_url], "question": q.api_url},
+        content_type="application/json",
+    )
+    assert response.status_code == 400
+
+    q = QuestionFactory(
+        reader_study=rs, answer_type=answer_type, required=False
+    )
+
+    response = get_view_for_user(
+        viewname="api:reader-studies-answer-list",
+        user=reader,
+        client=client,
+        method=client.post,
+        data={"answer": None, "images": [im.api_url], "question": q.api_url},
+        content_type="application/json",
+    )
+    assert response.status_code == 201
+
+
+@pytest.mark.django_db
 def test_mine(client):
     im1, im2 = ImageFactory(), ImageFactory()
     rs1, rs2 = ReaderStudyFactory(), ReaderStudyFactory()
@@ -664,10 +703,10 @@ def test_mine(client):
     rs2.add_reader(reader)
 
     q1 = QuestionFactory(
-        reader_study=rs1, answer_type=Question.ANSWER_TYPE_BOOL
+        reader_study=rs1, answer_type=Question.AnswerType.BOOL
     )
     q2 = QuestionFactory(
-        reader_study=rs2, answer_type=Question.ANSWER_TYPE_BOOL
+        reader_study=rs2, answer_type=Question.AnswerType.BOOL
     )
 
     a1 = AnswerFactory(question=q1, creator=reader, answer=True)
@@ -721,7 +760,7 @@ def test_ground_truth_is_excluded(client):
     rs.add_editor(editor)
     rs.add_reader(editor)
 
-    q = QuestionFactory(reader_study=rs, answer_type=Question.ANSWER_TYPE_BOOL)
+    q = QuestionFactory(reader_study=rs, answer_type=Question.AnswerType.BOOL)
 
     a1 = AnswerFactory(
         question=q, creator=editor, answer=True, is_ground_truth=True
@@ -745,17 +784,16 @@ def test_ground_truth_is_excluded(client):
     assert results[0]["pk"] == str(a2.pk)
 
 
-@pytest.mark.skip("Temporarily disabled")  # TODO JM
 @pytest.mark.django_db
 @pytest.mark.parametrize(
     "answer_type,answer",
     (
-        (Question.ANSWER_TYPE_BOOL, True),
-        (Question.ANSWER_TYPE_NUMBER, 12),
-        (Question.ANSWER_TYPE_SINGLE_LINE_TEXT, "dgfsgfds"),
-        (Question.ANSWER_TYPE_MULTI_LINE_TEXT, "dgfsgfds\ndgfsgfds"),
+        (Question.AnswerType.BOOL, True),
+        (Question.AnswerType.NUMBER, 12),
+        (Question.AnswerType.SINGLE_LINE_TEXT, "dgfsgfds"),
+        (Question.AnswerType.MULTI_LINE_TEXT, "dgfsgfds\ndgfsgfds"),
         (
-            Question.ANSWER_TYPE_2D_BOUNDING_BOX,
+            Question.AnswerType.BOUNDING_BOX_2D,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "2D bounding box",
@@ -764,7 +802,7 @@ def test_ground_truth_is_excluded(client):
             },
         ),
         (
-            Question.ANSWER_TYPE_DISTANCE_MEASUREMENT,
+            Question.AnswerType.DISTANCE_MEASUREMENT,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Distance measurement",
@@ -774,7 +812,7 @@ def test_ground_truth_is_excluded(client):
             },
         ),
         (
-            Question.ANSWER_TYPE_MULTIPLE_DISTANCE_MEASUREMENTS,
+            Question.AnswerType.MULTIPLE_DISTANCE_MEASUREMENTS,
             {
                 "version": {"major": 1, "minor": 0},
                 "type": "Multiple distance measurements",
@@ -787,11 +825,7 @@ def test_ground_truth_is_excluded(client):
         ),
     ),
 )
-@mock.patch(
-    "grandchallenge.reader_studies.views.timezone.now",
-    return_value=datetime(2020, 1, 1, 0, 0, tzinfo=timezone.utc),
-)
-def test_csv_export(now, client, answer_type, answer):
+def test_csv_export(client, answer_type, answer):
     im = ImageFactory()
 
     rs = ReaderStudyFactory()
@@ -813,12 +847,12 @@ def test_csv_export(now, client, answer_type, answer):
     a.save()
 
     response = get_view_for_user(
-        viewname="api:reader-study-export-answers",
-        reverse_kwargs={"pk": rs.pk},
+        viewname="api:reader-studies-answer-list",
+        params={"question__reader_study": str(rs.pk)},
         user=editor,
         client=client,
         method=client.get,
-        content_type="application/json",
+        HTTP_ACCEPT="text/csv",
     )
 
     headers = str(response.serialize_headers())
@@ -826,78 +860,50 @@ def test_csv_export(now, client, answer_type, answer):
 
     assert response.status_code == 200
     assert "Content-Type: text/csv" in headers
-    assert (
-        f'filename="{rs.slug}-answers-2020-01-01T00:00:00+00:00.csv"'
-        in headers
-    )
-    assert a.question.question_text in content
-    assert a.question.get_answer_type_display() in content
-    assert str(a.question.required) in content
-    assert a.question.get_image_port_display() in content
+
     if isinstance(answer, dict):
         for key in answer:
             assert key in content
     else:
-        assert re.sub(r"[\n\r\t]", " ", str(a.answer)) in content
-    assert im.name in content
+        assert re.sub(r"\n", r"\\n", str(a.answer)) in content
     assert a.creator.username in content
 
     response = get_view_for_user(
-        viewname="api:reader-study-export-answers",
-        reverse_kwargs={"pk": rs.pk},
-        user=reader,
+        viewname="api:reader-studies-question-list",
+        params={"reader_study": str(rs.pk)},
+        user=editor,
         client=client,
         method=client.get,
-        content_type="application/json",
+        HTTP_ACCEPT="text/csv",
     )
-    assert response.status_code == 404
 
+    headers = str(response.serialize_headers())
+    content = str(response.content)
 
-@pytest.mark.parametrize(
-    "data,elements,lines",
-    (
-        ([["a"], ["b"], ["c"]], 1, 3),
-        ([["a"], ["b,c"], ["c"]], 1, 3),
-        ([["a\nb"], ["b"], ["c"]], 1, 3),
-        ([["a\rb\nc", "\nb", "\rc\r\r"]], 3, 1),
-        ([["a", "a", "\na"], ["b", "b", "b"], ["c", "c", "c"]], 3, 3),
-        (
-            [["a", '{"a":\n{"b": "c\nd"}\n}'], ["b", "b,c,d"], ["c", "d\r"]],
-            2,
-            3,
-        ),
-    ),
-)
-def test_csv_export_preprocessing(tmp_path, data, elements, lines):
-    exporter = ExportCSVMixin()
-    processed = exporter._preprocess_data(data)
-    assert len(processed) == lines
+    assert response.status_code == 200
+    assert "Content-Type: text/csv" in headers
 
-    # Unfortunately, we have to create an actual file here, as both tempfile
-    # and StringIO seem to cause issues with line endings
-    with open(tmp_path / "csv.csv", "w+", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerows(processed)
+    assert a.question.question_text in content
+    assert a.question.get_answer_type_display() in content
+    assert str(a.question.required) in content
+    assert a.question.get_image_port_display() in content
 
-    with open(tmp_path / "csv.csv", "r", newline="") as f:
-        reader = csv.reader(f)
-        for line in reader:
-            assert len(line) == elements
-        assert reader.line_num == lines
+    response = get_view_for_user(
+        viewname="api:image-list",
+        params={"readerstudies": str(rs.pk)},
+        user=editor,
+        client=client,
+        method=client.get,
+        HTTP_ACCEPT="text/csv",
+    )
 
+    headers = str(response.serialize_headers())
+    content = str(response.content)
 
-def test_csv_export_create_dicts():
-    exporter = ExportCSVMixin()
-    headers = ["foo", "bar"]
-    data = []
+    assert response.status_code == 200
+    assert "Content-Type: text/csv" in headers
 
-    for x in range(10):
-        data.append([f"foo{x}", f"bar{x}"])
-
-    csv_dicts = exporter._create_dicts(headers, data)
-
-    for index, dct in enumerate(csv_dicts):
-        assert dct == {"foo": f"foo{index}", "bar": f"bar{index}"}
+    assert im.name in content
 
 
 @pytest.mark.django_db
@@ -987,13 +993,13 @@ def test_ground_truth(client):
     rs.add_reader(reader)
 
     q1 = QuestionFactory(
-        answer_type=Question.ANSWER_TYPE_CHOICE, reader_study=rs
+        answer_type=Question.AnswerType.CHOICE, reader_study=rs
     )
     q2 = QuestionFactory(
-        answer_type=Question.ANSWER_TYPE_MULTIPLE_CHOICE, reader_study=rs
+        answer_type=Question.AnswerType.MULTIPLE_CHOICE, reader_study=rs
     )
     q3 = QuestionFactory(
-        answer_type=Question.ANSWER_TYPE_MULTIPLE_CHOICE_DROPDOWN,
+        answer_type=Question.AnswerType.MULTIPLE_CHOICE_DROPDOWN,
         reader_study=rs,
     )
 
@@ -1054,7 +1060,7 @@ def test_ground_truth(client):
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("answer_type", ("PIMG", "MPIM"))
+@pytest.mark.parametrize("answer_type", ("PIMG", "MPIM", "MASK"))
 def test_assign_answer_image(client, settings, answer_type):
     settings.task_eager_propagates = (True,)
     settings.task_always_eager = (True,)
@@ -1084,6 +1090,109 @@ def test_assign_answer_image(client, settings, answer_type):
     )
     RawImageFileFactory(upload_session=us, staged_file_id=f.file_id)
 
+    with capture_on_commit_callbacks(execute=True):
+        response = get_view_for_user(
+            viewname="api:upload-session-process-images",
+            reverse_kwargs={"pk": us.pk},
+            user=reader,
+            client=client,
+            method=client.patch,
+            data={"answer": str(answer.pk)},
+            content_type="application/json",
+        )
+
+    assert response.status_code == 200
+
+    answer.refresh_from_db()
+    image = us.image_set.first()
+
+    assert answer.answer_image == image
+    assert reader.has_perm("view_image", image)
+    assert editor.has_perm("view_image", image)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("answer_type", ("PIMG", "MPIM", "MASK"))
+def test_upload_session_owned_by_answer_creator(client, settings, answer_type):
+    settings.task_eager_propagates = (True,)
+    settings.task_always_eager = (True,)
+
+    rs = ReaderStudyFactory()
+    im = ImageFactory()
+    editor, reader = UserFactory(), UserFactory()
+
+    rs.images.add(im)
+    rs.add_editor(editor)
+    rs.add_reader(reader)
+
+    question = QuestionFactory(reader_study=rs, answer_type=answer_type)
+
+    us1 = RawImageUploadSessionFactory(creator=reader)
+    us2 = RawImageUploadSessionFactory(creator=editor)
+
+    answer1 = AnswerFactory(
+        creator=reader,
+        question=question,
+        answer={"upload_session_pk": str(us1.pk)},
+    )
+
+    f = StagedFileFactory(
+        file__from_path=Path(__file__).parent.parent
+        / "cases_tests"
+        / "resources"
+        / "image10x10x10.mha"
+    )
+    RawImageFileFactory(upload_session=us1, staged_file_id=f.file_id)
+
+    response = get_view_for_user(
+        viewname="api:upload-session-process-images",
+        reverse_kwargs={"pk": us2.pk},
+        user=editor,
+        client=client,
+        method=client.patch,
+        data={"answer": str(answer1.pk)},
+        content_type="application/json",
+    )
+
+    assert response.status_code == 400
+    assert (
+        b"User does not have permission to add an image to this answer"
+        in response.rendered_content
+    )
+
+
+@pytest.mark.django_db
+def test_question_accepts_image_type_answers(client, settings):
+    settings.task_eager_propagates = (True,)
+    settings.task_always_eager = (True,)
+
+    rs = ReaderStudyFactory()
+    im = ImageFactory()
+    reader = UserFactory()
+
+    rs.images.add(im)
+    rs.add_reader(reader)
+
+    question = QuestionFactory(
+        reader_study=rs, answer_type=Question.AnswerType.BOOL
+    )
+
+    us = RawImageUploadSessionFactory(creator=reader)
+
+    answer = AnswerFactory(
+        creator=reader,
+        question=question,
+        answer={"upload_session_pk": str(us.pk)},
+    )
+
+    f = StagedFileFactory(
+        file__from_path=Path(__file__).parent.parent
+        / "cases_tests"
+        / "resources"
+        / "image10x10x10.mha"
+    )
+    RawImageFileFactory(upload_session=us, staged_file_id=f.file_id)
+
     response = get_view_for_user(
         viewname="api:upload-session-process-images",
         reverse_kwargs={"pk": us.pk},
@@ -1094,11 +1203,8 @@ def test_assign_answer_image(client, settings, answer_type):
         content_type="application/json",
     )
 
-    assert response.status_code == 200
-
-    answer.refresh_from_db()
-    image = us.image_set.first()
-
-    assert answer.answer_image == image
-    assert reader.has_perm("view_image", image)
-    assert editor.has_perm("view_image", image)
+    assert response.status_code == 400
+    assert (
+        b"This question does not accept image type answers"
+        in response.rendered_content
+    )

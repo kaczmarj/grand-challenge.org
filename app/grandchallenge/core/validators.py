@@ -4,11 +4,16 @@ from typing import Tuple
 import magic
 from django.core.exceptions import ValidationError
 from django.utils.deconstruct import deconstructible
-from jsonschema import ValidationError as JSONValidationError, validate
+from jsonschema import (
+    SchemaError,
+    ValidationError as JSONValidationError,
+    validate,
+    validators,
+)
 
 
 @deconstructible
-class MimeTypeValidator(object):
+class MimeTypeValidator:
     allowed_types = ()
 
     def __init__(self, *, allowed_types: Tuple[str, ...]):
@@ -16,6 +21,13 @@ class MimeTypeValidator(object):
         super().__init__()
 
     def __call__(self, value):
+        if isinstance(value, list):
+            for v in value:
+                self._validate_mimetype(v)
+        else:
+            self._validate_mimetype(value)
+
+    def _validate_mimetype(self, value):
         mimetype = get_file_mimetype(value)
         if mimetype.lower() not in self.allowed_types:
             raise ValidationError(
@@ -37,7 +49,7 @@ class MimeTypeValidator(object):
 
 
 @deconstructible
-class ExtensionValidator(object):
+class ExtensionValidator:
     """
     Performs soft validation of the filename. Usage:
 
@@ -58,12 +70,11 @@ class ExtensionValidator(object):
         super().__init__()
 
     def __call__(self, value):
-        try:
-            self._validate_filepath(value.name)
-        except AttributeError:
-            # probably passed a list
+        if isinstance(value, list):
             for v in value:
                 self._validate_filepath(v.name)
+        else:
+            self._validate_filepath(value.name)
 
     def _validate_filepath(self, s):
         extensions = Path(s).suffixes
@@ -88,14 +99,23 @@ class ExtensionValidator(object):
         return hash(ExtensionValidator) + 7 * hash(self.allowed_extensions)
 
 
-def get_file_mimetype(f):
-    mimetype = magic.from_buffer(f.read(1024), mime=True)
-    f.seek(0)
+def get_file_mimetype(file):
+    n_bytes = 2048
+
+    try:
+        file.seek(0)
+        mimetype = magic.from_buffer(file.read(n_bytes), mime=True)
+        file.seek(0)
+    except AttributeError:
+        # File not open, so manage that here
+        with file.open("rb") as f:
+            mimetype = magic.from_buffer(f.read(n_bytes), mime=True)
+
     return mimetype
 
 
 @deconstructible
-class JSONSchemaValidator(object):
+class JSONValidator:
     """Uses jsonschema to validate json fields."""
 
     schema = None
@@ -108,13 +128,28 @@ class JSONSchemaValidator(object):
         try:
             validate(value, self.schema)
         except JSONValidationError as e:
-            raise ValidationError(str(e))
+            raise ValidationError(f"JSON does not fulfill schema: {e}")
 
     def __eq__(self, other):
-        return (
-            isinstance(other, JSONSchemaValidator)
-            and self.schema == other.schema
-        )
+        return isinstance(other, JSONValidator) and self.schema == other.schema
+
+    def __ne__(self, other):
+        return not (self == other)
+
+
+@deconstructible
+class JSONSchemaValidator:
+    """Validates JSON Schema against the latest or defined schema."""
+
+    def __call__(self, value):
+        try:
+            cls = validators.validator_for(schema=value)
+            cls.check_schema(schema=value)
+        except SchemaError as e:
+            raise ValidationError(f"Invalid schema: {e}")
+
+    def __eq__(self, other):
+        return isinstance(other, JSONValidator)
 
     def __ne__(self, other):
         return not (self == other)

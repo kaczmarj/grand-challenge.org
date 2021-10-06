@@ -1,11 +1,13 @@
 import os
 import shutil
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
+from panimg.image_builders.nifti import image_builder_nifti
+from panimg.models import ColorSpace
+from panimg.panimg import _build_files
 
-from grandchallenge.cases.image_builders.nifti import image_builder_nifti
-from grandchallenge.cases.models import Image
 from tests.cases_tests import RESOURCE_PATH
 
 
@@ -16,16 +18,24 @@ from tests.cases_tests import RESOURCE_PATH
         RESOURCE_PATH / "image10x11x12.nii.gz",
     ),
 )
-def test_image_builder_nifti(tmpdir, src: Path):
-    dest = Path(tmpdir) / src.name
-    shutil.copy(src, dest)
-    files = {Path(d[0]).joinpath(f) for d in os.walk(tmpdir) for f in d[2]}
-    result = image_builder_nifti(files=files)
-    assert result.consumed_files == {dest}
+def test_image_builder_nifti(tmpdir_factory, src: Path):
+    dest = Path(tmpdir_factory.mktemp("input"))
+
+    shutil.copy(src, dest / src.name)
+
+    files = {*dest.glob("*")}
+
+    result = _build_files(
+        builder=image_builder_nifti,
+        files=files,
+        output_directory=tmpdir_factory.mktemp("output"),
+    )
+
+    assert result.consumed_files == files
     assert len(result.new_images) == 1
 
     image = result.new_images.pop()
-    assert image.color_space == Image.COLOR_SPACE_GRAY
+    assert image.color_space == ColorSpace.GRAY.value
     assert image.width == 10
     assert image.height == 11
     assert image.depth == 12
@@ -38,6 +48,9 @@ def test_image_builder_with_other_file_extension(tmpdir):
     dest = Path(tmpdir) / "image10x10x10.mha"
     shutil.copy(RESOURCE_PATH / dest.name, dest)
     files = {Path(d[0]).joinpath(f) for d in os.walk(tmpdir) for f in d[2]}
-    result = image_builder_nifti(files=files)
+    with TemporaryDirectory() as output:
+        result = _build_files(
+            builder=image_builder_nifti, files=files, output_directory=output
+        )
     assert result.consumed_files == set()
     assert len(result.new_images) == 0

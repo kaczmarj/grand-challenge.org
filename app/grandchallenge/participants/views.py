@@ -7,22 +7,25 @@ from django.core.exceptions import (
 from django.db.models import Q
 from django.forms.utils import ErrorList
 from django.views.generic import CreateView, ListView, UpdateView
+from guardian.mixins import (
+    LoginRequiredMixin,
+    PermissionRequiredMixin as ObjectPermissionRequiredMixin,
+)
 
-from grandchallenge.core.permissions.mixins import (
-    UserIsChallengeAdminMixin,
-    UserIsNotAnonMixin,
-)
-from grandchallenge.participants.emails import (
-    send_participation_request_accepted_email,
-    send_participation_request_notification_email,
-    send_participation_request_rejected_email,
-)
 from grandchallenge.participants.models import RegistrationRequest
-from grandchallenge.subdomains.utils import reverse
+from grandchallenge.subdomains.utils import reverse, reverse_lazy
 
 
-class ParticipantsList(UserIsChallengeAdminMixin, ListView):
+class ParticipantsList(
+    LoginRequiredMixin, ObjectPermissionRequiredMixin, ListView
+):
     template_name = "participants/participants_list.html"
+    permission_required = "change_challenge"
+    raise_exception = True
+    login_url = reverse_lazy("account_login")
+
+    def get_permission_object(self):
+        return self.request.challenge
 
     def get_queryset(self):
         challenge = self.request.challenge
@@ -32,10 +35,12 @@ class ParticipantsList(UserIsChallengeAdminMixin, ListView):
 
 
 class RegistrationRequestCreate(
-    UserIsNotAnonMixin, SuccessMessageMixin, CreateView
+    LoginRequiredMixin, SuccessMessageMixin, CreateView
 ):
     model = RegistrationRequest
     fields = ()
+    raise_exception = True
+    login_url = reverse_lazy("account_login")
 
     def get_success_url(self):
         challenge = self.request.challenge
@@ -50,12 +55,6 @@ class RegistrationRequestCreate(
         form.instance.challenge = challenge
         try:
             redirect = super().form_valid(form)
-            if challenge.require_participant_review:
-                # Note, sending an email here rather than in signals as
-                # the function requires the request.
-                send_participation_request_notification_email(
-                    self.request, self.object
-                )
             return redirect
 
         except ValidationError as e:
@@ -74,8 +73,16 @@ class RegistrationRequestCreate(
         return context
 
 
-class RegistrationRequestList(UserIsChallengeAdminMixin, ListView):
+class RegistrationRequestList(
+    LoginRequiredMixin, ObjectPermissionRequiredMixin, ListView
+):
     model = RegistrationRequest
+    permission_required = "change_challenge"
+    raise_exception = True
+    login_url = reverse_lazy("account_login")
+
+    def get_permission_object(self):
+        return self.request.challenge
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -84,27 +91,23 @@ class RegistrationRequestList(UserIsChallengeAdminMixin, ListView):
 
 
 class RegistrationRequestUpdate(
-    UserIsChallengeAdminMixin, SuccessMessageMixin, UpdateView
+    LoginRequiredMixin,
+    ObjectPermissionRequiredMixin,
+    SuccessMessageMixin,
+    UpdateView,
 ):
     model = RegistrationRequest
     fields = ("status",)
     success_message = "Registration successfully updated"
+    permission_required = "change_challenge"
+    raise_exception = True
+    login_url = reverse_lazy("account_login")
+
+    def get_permission_object(self):
+        return self.request.challenge
 
     def get_success_url(self):
         return reverse(
             "participants:registration-list",
             kwargs={"challenge_short_name": self.object.challenge.short_name},
         )
-
-    def form_valid(self, form):
-        redirect = super().form_valid(form)
-        # TODO: check if the status has actually changed
-        if self.object.status == RegistrationRequest.ACCEPTED:
-            send_participation_request_accepted_email(
-                self.request, self.object
-            )
-        if self.object.status == RegistrationRequest.REJECTED:
-            send_participation_request_rejected_email(
-                self.request, self.object
-            )
-        return redirect

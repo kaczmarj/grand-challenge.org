@@ -8,6 +8,7 @@
 {% load humanize %}
 {% load remove_whitespace %}
 {% load naturaldelta %}
+{% load static %}
 
 {% block title %}
     {{ object.title }} - {{ block.super }}
@@ -27,29 +28,30 @@
     {% get_obj_perms request.user for object as "algorithm_perms" %}
 
     <div class="col-12 col-md-4 col-lg-3 mb-3">
-        <div class="nav nav-pills flex-column" id="v-pills-tab" role="tablist"
-             aria-orientation="vertical">
-            <a class="nav-link active" id="v-pills-home-tab" data-toggle="pill"
-               href="#v-pills-home" role="tab" aria-controls="v-pills-home"
+        <ul class="nav nav-pills flex-column" id="v-pills-tab" role="tablist"
+            aria-orientation="vertical">
+            <a class="nav-link" id="v-pills-information-tab" data-toggle="pill"
+               href="#information" role="tab" aria-controls="v-pills-information"
                aria-selected="true"><i
                     class="fas fa-info fa-fw"></i>&nbsp;Information
             </a>
 
             {% if "change_algorithm" in algorithm_perms %}
                 <a class="nav-link" id="v-pills-containers-tab" data-toggle="pill"
-                   href="#v-pills-containers" role="tab"
+                   href="#containers" role="tab"
                    aria-controls="v-pills-containers"
                    aria-selected="false">
                     {# @formatter:off #}
-                    <i class="fab fa-docker fa-fw"></i>&nbsp;Containers{% if not object.latest_ready_image %}&nbsp;<i class="fas fa-exclamation-triangle text-danger"></i>{% endif %}
+                    <i class="fab fa-docker fa-fw"></i>&nbsp;Containers{% if not object.latest_ready_image %}&nbsp;
+                    <i class="fas fa-exclamation-triangle text-danger"></i>{% endif %}
                     {# @formatter:on #}
                 </a>
                 <a class="nav-link" id="v-pills-editors-tab" data-toggle="pill"
-                   href="#v-pills-editors" role="tab" aria-controls="v-pills-editors"
+                   href="#editors" role="tab" aria-controls="v-pills-editors"
                    aria-selected="false"><i class="fas fa-user fa-fw"></i>&nbsp;Editors
                 </a>
                 <a class="nav-link" id="v-pills-users-tab" data-toggle="pill"
-                   href="#v-pills-users" role="tab" aria-controls="v-pills-users"
+                   href="#users" role="tab" aria-controls="v-pills-users"
                    aria-selected="false"><i class="fas fa-users fa-fw"></i>&nbsp;Users
                 </a>
                 <a class="nav-link"
@@ -57,14 +59,28 @@
                 ><i class="fas fa-question fa-fw"></i>&nbsp;Requests&nbsp;<span
                         class="badge badge-pill badge-secondary align-middle">{{ pending_permission_requests }}</span>
                 </a>
+                {% if builds.count > 0 %}
+                     <a class="nav-link" id="v-pills-builds-tab" data-toggle="pill"
+                       href="#builds" role="tab" aria-controls="v-pills-builds"
+                       aria-selected="false"><i class="fas fa-tools fa-fw"></i>&nbsp;Builds
+                    </a>
+                {% endif %}
             {% endif %}
 
             {% if "execute_algorithm" in algorithm_perms and object.latest_ready_image %}
-                <a class="nav-link"
-                   href="{% url 'algorithms:execution-session-create' slug=object.slug %}">
-                    <i class="fas fa-file-import fa-fw"></i>&nbsp;Try-out Algorithm
-                </a>
+                {% if object.use_flexible_inputs %}
+                    <a class="nav-link"
+                       href="{% url 'algorithms:execution-session-create-new' slug=object.slug %}">
+                        <i class="fas fa-file-import fa-fw"></i>&nbsp;Try-out Algorithm
+                    </a>
+                {% else %}
+                    <a class="nav-link"
+                       href="{% url 'algorithms:execution-session-create' slug=object.slug %}">
+                        <i class="fas fa-file-import fa-fw"></i>&nbsp;Try-out Algorithm
+                    </a>
+                {% endif %}
             {% endif %}
+
 
             <a class="nav-link"
                href="{% url 'algorithms:job-list' slug=object.slug %}">
@@ -77,15 +93,15 @@
                     <i class="fa fa-question fa-fw"></i>&nbsp;Request Access
                 </a>
             {% endif %}
-        </div>
+        </ul>
     </div>
 {% endblock %}
 
 {% block content %}
     {% get_obj_perms request.user for object as "algorithm_perms" %}
     <div class="tab-content" id="v-pills-tabContent">
-        <div class="tab-pane fade show active" id="v-pills-home" role="tabpanel"
-             aria-labelledby="v-pills-home-tab">
+        <div class="tab-pane fade show" id="information" role="tabpanel"
+             aria-labelledby="v-pills-information-tab">
 
             <h2>{{ object.title }}</h2>
             {% comment %}
@@ -93,7 +109,7 @@
             <h5>
                 By
                 {% for user in object.editors_group.user_set.all %}
-                    <a href="{% url 'userena_profile_detail' username=user.username %}">
+                    <a href="{% url 'profile-detail' username=user.username %}">
                         {# @formatter:off #}
                         {% firstof user.get_full_name user.username %}</a>{% if forloop.revcounter0 > 1 %},{% elif forloop.revcounter0 == 1 %} and {% else %}.{% endif %}
                         {# @formatter:on #}
@@ -127,10 +143,10 @@
                         with its default configuration.
                     {% endif %}
                 </p>
-                {% if average_job_duration %}
+                {% if object.average_duration %}
                     <p>
                         On average, successful jobs for this algorithm have
-                        taken {{ average_job_duration|naturaldelta }}.
+                        taken {{ object.average_duration|naturaldelta }}.
                     </p>
                 {% endif %}
                 <p>
@@ -143,7 +159,7 @@
         </div>
 
         {% if "change_algorithm" in algorithm_perms %}
-            <div class="tab-pane fade" id="v-pills-editors" role="tabpanel"
+            <div class="tab-pane fade" id="editors" role="tabpanel"
                  aria-labelledby="v-pills-editors-tab">
 
                 <h2>Editors</h2>
@@ -163,7 +179,7 @@
                 </p>
             </div>
 
-            <div class="tab-pane fade" id="v-pills-users" role="tabpanel"
+            <div class="tab-pane fade" id="users" role="tabpanel"
                  aria-labelledby="v-pills-editors-tab">
 
                 <h2>Users</h2>
@@ -180,7 +196,7 @@
                 </p>
             </div>
 
-            <div class="tab-pane fade" id="v-pills-requests" role="tabpanel"
+            <div class="tab-pane fade" id="requests" role="tabpanel"
                  aria-labelledby="v-pills-requests-tab">
 
                 <h2>Permission Requests</h2>
@@ -196,41 +212,98 @@
 
             </div>
 
-            <div class="tab-pane fade" id="v-pills-containers" role="tabpanel"
+            <div class="tab-pane fade" id="builds" role="tabpanel"
+                 aria-labelledby="v-pills-builds-tab">
+
+                <h2>Builds</h2>
+
+                {% for build in builds %}
+                    <div class="mb-2">
+                        <a class="btn btn-{% if build.status == 'SUCCEEDED' %}success{% elif build.status == 'IN_PROGRESS' %}warning{% else %}danger{% endif %}">
+                            <i class="fa fa-tools"></i> Build {{ build.build_id }} ({{ build.webhook_message.tag }}): {{ build.status }}
+                        </a>
+                    </div>
+                {% endfor %}
+            </div>
+
+            <div class="tab-pane fade" id="containers" role="tabpanel"
                  aria-labelledby="v-pills-containers">
 
-                <h2>Containers</h2>
+                <h2>Container Images</h2>
 
                 {% if not object.latest_ready_image %}
-                    <p>You need to upload a valid algorithm container.</p>
+                    <p>
+                        You need to link your algorithm to a GitHub repo and create a new tag,
+                        or upload a valid algorithm container image.
+                    </p>
                 {% endif %}
 
-                <ul>
-                    {% for image in object.algorithm_container_images.all %}
-                        <li>
-                            <a href="{{ image.get_absolute_url }}">
-                                Container uploaded
-                                by {{ image.creator }} {{ image.created|naturaltime }}.
-                                {% if image.ready %}
-                                    Ready to be used.
-                                {% else %}
-                                    Not ready to be used.
-                                {% endif %}
-                                {% if image == object.latest_ready_image %}
-                                    <b>Active</b>.
-                                {% endif %}
-                            </a>
-                        </li>
-                    {% endfor %}
-                </ul>
+                {% if object.repo_name %}
+                    <p>
+                        New container images will be automatically built when
+                        <a href="https://github.com/{{ object.repo_name }}">https://github.com/{{ object.repo_name }}</a>
+                        is tagged.
+                        However, if you wish, you can still upload container images here.
+                    </p>
+                {% endif %}
 
                 <p>
+                    {% if object.repo_name %}
+                        <a class="btn btn-primary"
+                           href={% url "algorithms:add-repo" slug=object.slug %}>
+                           <i class="fa fa-code-branch"></i> Update Linked Repo
+                        </a>
+                    {% else %}
+                        <a class="btn btn-success"
+                           href="{{ github_app_install_url }}">
+                            <i class="fa fa-code-branch"></i> Link GitHub Repo
+                        </a>
+                    {% endif %}
                     <a class="btn btn-primary"
                        href="{% url 'algorithms:image-create' slug=object.slug %}">
                         <i class="fa fa-upload"></i> Upload a Container
                     </a>
                 </p>
+
+                <ul class="list-unstyled">
+                    {% for image in object.algorithm_container_images.all %}
+                        <li>
+                            <a class="btn btn-primary btn-sm"
+                               href="{{ image.get_absolute_url }}">
+                                <i class="fas fa-info-circle"></i>
+                            </a>
+                            {% if image.build %}
+                                <a class="btn btn-sm btn-{{ image.build.status_context }}"
+                                    href="{{ image.get_absolute_url }}">
+                                    {% if image.build.animate %}
+                                        <span class="spinner-border spinner-border-sm" role="status"
+                                              aria-hidden="true"></span>
+                                    {% endif %}
+                                    Build {{ image.build.get_status_display }}
+                                </a>
+                                Container image from
+                                <a href="{{ image.build.webhook_message.tag_url }}">{{ image.build.webhook_message.repo_name }}:{{ image.build.webhook_message.tag }}</a>
+                            {% else %}
+                                Container image uploaded by {{ image.creator }} {{ image.created|naturaltime }}
+                            {% endif %}
+                            {% if image.ready and image == object.latest_ready_image %}
+                                <span class="badge badge-success">
+                                    Active
+                                </span>
+                            {% else %}
+                                <span class="badge badge-danger">
+                                    Inactive
+                                </span>
+                            {% endif %}
+                        </li>
+                    {% endfor %}
+                </ul>
             </div>
         {% endif %}
     </div>
+{% endblock %}
+
+{% block script %}
+    {{ block.super }}
+    <script src="{% static "js/refresh_sidebar.js" %}"></script>
 {% endblock %}

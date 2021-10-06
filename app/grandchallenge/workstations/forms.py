@@ -1,5 +1,6 @@
 from crispy_forms.helper import FormHelper
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.forms import (
     ChoiceField,
     ModelForm,
@@ -26,11 +27,13 @@ class WorkstationImageForm(ModelForm):
         widget=uploader.AjaxUploadWidget(multifile=False),
         label="Workstation Image",
         validators=[
-            ExtensionValidator(allowed_extensions=(".tar", ".tar.gz"))
+            ExtensionValidator(
+                allowed_extensions=(".tar", ".tar.gz", ".tar.xz")
+            )
         ],
         help_text=(
-            ".tar.gz archive of the container image produced from the command "
-            "'docker save IMAGE | gzip -c > IMAGE.tar.gz'. See "
+            ".tar.xz archive of the container image produced from the command "
+            "'docker save IMAGE | xz -c > IMAGE.tar.xz'. See "
             "https://docs.docker.com/engine/reference/commandline/save/"
         ),
     )
@@ -39,6 +42,15 @@ class WorkstationImageForm(ModelForm):
         super().__init__(*args, **kwargs)
         self.helper = FormHelper(self)
         self.fields["chunked_upload"].widget.user = user
+
+    def clean_chunked_upload(self):
+        files = self.cleaned_data["chunked_upload"]
+        if (
+            sum([f.size for f in files])
+            > settings.COMPONENTS_MAXIMUM_IMAGE_SIZE
+        ):
+            raise ValidationError("File size limit exceeded")
+        return files
 
     class Meta:
         model = WorkstationImage

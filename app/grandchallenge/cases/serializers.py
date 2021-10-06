@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
-from rest_framework.fields import CharField, SerializerMethodField
+from rest_framework.fields import CharField
 from rest_framework.relations import (
     HyperlinkedRelatedField,
     PrimaryKeyRelatedField,
@@ -8,7 +8,6 @@ from rest_framework.relations import (
 )
 
 from grandchallenge.algorithms.models import Algorithm
-from grandchallenge.api.swagger import swagger_schema_fields_for_charfield
 from grandchallenge.archives.models import Archive
 from grandchallenge.cases.models import (
     Image,
@@ -27,23 +26,6 @@ class ImageFileSerializer(serializers.ModelSerializer):
 
 class HyperlinkedImageSerializer(serializers.ModelSerializer):
     files = ImageFileSerializer(many=True, read_only=True)
-    job_set = SerializerMethodField()
-    archive_set = HyperlinkedRelatedField(
-        read_only=True, many=True, view_name="api:archive-detail"
-    )
-    reader_study_set = HyperlinkedRelatedField(
-        source="readerstudies",
-        read_only=True,
-        many=True,
-        view_name="api:reader-study-detail",
-    )
-
-    def get_job_set(self, obj):
-        return [
-            job.api_url
-            for civ in obj.componentinterfacevalue_set.all()
-            for job in civ.algorithms_jobs_as_input.all()
-        ]
 
     class Meta:
         model = Image
@@ -52,9 +34,6 @@ class HyperlinkedImageSerializer(serializers.ModelSerializer):
             "name",
             "study",
             "files",
-            "reader_study_set",
-            "archive_set",
-            "job_set",
             "width",
             "height",
             "depth",
@@ -69,6 +48,16 @@ class HyperlinkedImageSerializer(serializers.ModelSerializer):
             "voxel_height_mm",
             "voxel_depth_mm",
             "api_url",
+            "patient_id",
+            "patient_name",
+            "patient_birth_date",
+            "patient_age",
+            "patient_sex",
+            "study_date",
+            "study_instance_uid",
+            "series_instance_uid",
+            "study_description",
+            "series_description",
         )
 
 
@@ -87,9 +76,6 @@ class RawImageUploadSessionSerializer(serializers.ModelSerializer):
             "error_message",
             "image_set",
             "api_url",
-        )
-        swagger_schema_fields = swagger_schema_fields_for_charfield(
-            status=model._meta.get_field("status")
         )
 
 
@@ -167,7 +153,12 @@ class RawImageUploadSessionPatchSerializer(RawImageUploadSessionSerializer):
 
         if not user.has_perm("change_answer", value):
             raise ValidationError(
-                "User does not have permission add an image to this answer"
+                "User does not have permission to add an image to this answer"
+            )
+
+        if not value.question.is_image_type:
+            raise ValidationError(
+                "This question does not accept image type answers."
             )
 
         return value

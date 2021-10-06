@@ -1,7 +1,7 @@
 from django.db import models
 from django.utils import timezone
 
-from grandchallenge.core.storage import get_logo_path
+from grandchallenge.core.storage import get_logo_path, get_pdf_path
 from grandchallenge.subdomains.utils import reverse
 
 
@@ -39,7 +39,7 @@ class ProductImage(models.Model):
     img = models.ImageField(upload_to=get_logo_path)
 
 
-class Status(object):
+class Status:
     CERTIFIED = "cer"
     YES = "yes"
     NO = "no"
@@ -113,6 +113,7 @@ class Product(models.Model):
     ce_status = models.CharField(
         choices=CEStatus.choices, max_length=3, default=CEStatus.NO
     )
+    ce_under = models.CharField(max_length=10, blank=True)
     ce_class = models.CharField(max_length=500, default="unknown")
     fda_status = models.CharField(
         choices=FDAStatus.choices, max_length=3, default=FDAStatus.UNKNOWN
@@ -152,3 +153,12 @@ class Product(models.Model):
 
     def get_absolute_url(self):
         return reverse("products:product-detail", kwargs={"slug": self.slug})
+
+
+class ProjectAirFiles(models.Model):
+    title = models.CharField(max_length=150)
+    study_file = models.FileField(upload_to=get_pdf_path)
+    archive = models.BooleanField(
+        default=False,
+        help_text="Set to True if the file is no longer the most recent version. It will remain available on the page for download under archived protocols.",
+    )

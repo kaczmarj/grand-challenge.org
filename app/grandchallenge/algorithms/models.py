@@ -1,19 +1,25 @@
 import logging
 from datetime import timedelta
 
+from actstream.actions import follow, is_following
+from actstream.models import Follow
 from django.conf import settings
 from django.contrib.auth.models import Group
+from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import models
-from django.db.models import Min, Sum
+from django.db.models import Min, Q, Sum
 from django.db.models.signals import post_delete
+from django.db.transaction import on_commit
 from django.dispatch import receiver
 from django.utils import timezone
 from django.utils.functional import cached_property
+from django_deprecate_fields import deprecate_field
 from django_extensions.db.models import TitleSlugDescriptionModel
 from guardian.shortcuts import assign_perm, get_objects_for_group, remove_perm
 from jinja2 import sandbox
 from jinja2.exceptions import TemplateError
+from stdimage import JPEGField
 
 from grandchallenge.anatomy.models import BodyStructure
 from grandchallenge.components.models import (
@@ -30,6 +36,7 @@ from grandchallenge.core.storage import (
 from grandchallenge.core.templatetags.bleach import md2html
 from grandchallenge.evaluation.utils import get
 from grandchallenge.modalities.models import ImagingModality
+from grandchallenge.notifications.models import Notification, NotificationType
 from grandchallenge.organizations.models import Organization
 from grandchallenge.publications.models import Publication
 from grandchallenge.subdomains.utils import reverse
@@ -46,27 +53,30 @@ JINJA_ENGINE = sandbox.ImmutableSandboxedEnvironment()
 class Algorithm(UUIDModel, TitleSlugDescriptionModel):
     editors_group = models.OneToOneField(
         Group,
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         editable=False,
         related_name="editors_of_algorithm",
     )
     users_group = models.OneToOneField(
         Group,
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         editable=False,
         related_name="users_of_algorithm",
     )
-    logo = models.ImageField(
-        upload_to=get_logo_path, storage=public_s3_storage
+    logo = JPEGField(
+        upload_to=get_logo_path,
+        storage=public_s3_storage,
+        variations=settings.STDIMAGE_LOGO_VARIATIONS,
     )
-    social_image = models.ImageField(
+    social_image = JPEGField(
         upload_to=get_social_image_path,
         storage=public_s3_storage,
         blank=True,
-        help_text="An image for this algorithm which is displayed when you post the link for this algorithm on social media. Should be square with a resolution of 640x320 px (1280x640 px for best display).",
+        help_text="An image for this algorithm which is displayed when you post the link for this algorithm on social media. Should have a resolution of 640x320 px (1280x640 px for best display).",
+        variations=settings.STDIMAGE_SOCIAL_VARIATIONS,
     )
     workstation = models.ForeignKey(
-        "workstations.Workstation", on_delete=models.CASCADE
+        "workstations.Workstation", on_delete=models.PROTECT
     )
     workstation_config = models.ForeignKey(
         "workstation_configs.WorkstationConfig",
@@ -95,13 +105,13 @@ class Algorithm(UUIDModel, TitleSlugDescriptionModel):
     )
     result_template = models.TextField(
         blank=True,
-        default="<pre>{{ result_dict|tojson(indent=2) }}</pre>",
+        default="<pre>{{ results|tojson(indent=2) }}</pre>",
         help_text=(
             "Define the jinja template to render the content of the "
-            "result.json to html. For example, the following template will print "
-            "out all the keys and values of the result.json. Use result-dict to access"
-            "the json root."
-            "{% for key, value in result_dict.metrics.items() -%}"
+            "results.json to html. For example, the following template will "
+            "print out all the keys and values of the result.json. "
+            "Use results to access the json root. "
+            "{% for key, value in results.metrics.items() -%}"
             "{{ key }}  {{ value }}"
             "{% endfor %}"
         ),
@@ -139,10 +149,35 @@ class Algorithm(UUIDModel, TitleSlugDescriptionModel):
             "The number of credits that are required for each execution of this algorithm."
         ),
     )
+    average_duration = models.DurationField(
+        null=True,
+        default=None,
+        editable=False,
+        help_text="The average duration of successful jobs.",
+    )
+    use_flexible_inputs = models.BooleanField(default=True)
+    repo_name = models.CharField(blank=True, max_length=512)
+    image_requires_gpu = models.BooleanField(default=True)
+    image_requires_memory_gb = models.PositiveIntegerField(default=15)
+    recurse_submodules = models.BooleanField(
+        default=False,
+        help_text="Do a recursive git pull when a GitHub repo is linked to this algorithm.",
+    )
+    highlight = models.BooleanField(
+        default=False,
+        help_text="Should this algorithm be advertised on the home page?",
+    )
 
     class Meta(UUIDModel.Meta, TitleSlugDescriptionModel.Meta):
         ordering = ("created",)
         permissions = [("execute_algorithm", "Can execute algorithm")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["repo_name"],
+                name="unique_repo_name",
+                condition=~Q(repo_name=""),
+            ),
+        ]
 
     def __str__(self):
         return f"{self.title}"
@@ -171,6 +206,13 @@ class Algorithm(UUIDModel, TitleSlugDescriptionModel):
         self.assign_permissions()
         self.assign_workstation_permissions()
 
+    def delete(self, *args, **kwargs):
+        ct = ContentType.objects.filter(
+            app_label=self._meta.app_label, model=self._meta.model_name
+        ).get()
+        Follow.objects.filter(object_id=self.pk, content_type=ct).delete()
+        super().delete(*args, **kwargs)
+
     def create_groups(self):
         self.editors_group = Group.objects.create(
             name=f"{self._meta.app_label}_{self._meta.model_name}_{self.pk}_editors"
@@ -180,17 +222,23 @@ class Algorithm(UUIDModel, TitleSlugDescriptionModel):
         )
 
     def set_default_interfaces(self):
-        self.inputs.set(
-            [ComponentInterface.objects.get(slug=DEFAULT_INPUT_INTERFACE_SLUG)]
-        )
-        self.outputs.set(
-            [
-                ComponentInterface.objects.get(slug="results-json-file"),
-                ComponentInterface.objects.get(
-                    slug=DEFAULT_OUTPUT_INTERFACE_SLUG
-                ),
-            ]
-        )
+        if not self.inputs.exists():
+            self.inputs.set(
+                [
+                    ComponentInterface.objects.get(
+                        slug=DEFAULT_INPUT_INTERFACE_SLUG
+                    )
+                ]
+            )
+        if not self.outputs.exists():
+            self.outputs.set(
+                [
+                    ComponentInterface.objects.get(slug="results-json-file"),
+                    ComponentInterface.objects.get(
+                        slug=DEFAULT_OUTPUT_INTERFACE_SLUG
+                    ),
+                ]
+            )
 
     def assign_permissions(self):
         # Editors and users can view this algorithm
@@ -232,7 +280,7 @@ class Algorithm(UUIDModel, TitleSlugDescriptionModel):
                     perm=perm, user_or_group=group, obj=self.workstation
                 )
 
-    @property
+    @cached_property
     def latest_ready_image(self):
         """
         Returns
@@ -245,7 +293,7 @@ class Algorithm(UUIDModel, TitleSlugDescriptionModel):
             .first()
         )
 
-    @property
+    @cached_property
     def default_workstation(self):
         """
         Returns the default workstation, creating it if it does not already
@@ -260,6 +308,13 @@ class Algorithm(UUIDModel, TitleSlugDescriptionModel):
             w.save()
 
         return w
+
+    def update_average_duration(self):
+        """Store the duration of successful jobs for this algorithm"""
+        self.average_duration = Job.objects.filter(
+            algorithm_image__algorithm=self, status=Job.SUCCESS
+        ).average_duration()
+        self.save(update_fields=("average_duration",))
 
     def is_editor(self, user):
         return user.groups.filter(pk=self.editors_group.pk).exists()
@@ -302,10 +357,12 @@ def delete_algorithm_groups_hook(*_, instance: Algorithm, using, **__):
 class AlgorithmImage(UUIDModel, ComponentImage):
     algorithm = models.ForeignKey(
         Algorithm,
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name="algorithm_container_images",
     )
-    queue_override = models.CharField(max_length=128, blank=True)
+    queue_override = deprecate_field(
+        models.CharField(max_length=128, blank=True)
+    )
 
     class Meta(UUIDModel.Meta, ComponentImage.Meta):
         ordering = ("created", "creator")
@@ -348,7 +405,7 @@ class JobQuerySet(models.QuerySet):
         user_groups = Group.objects.filter(user=user)
 
         return (
-            self.filter(creator=user, created__range=[now - period, now],)
+            self.filter(creator=user, created__range=[now - period, now])
             .distinct()
             .order_by("created")
             .select_related("algorithm_image__algorithm")
@@ -362,7 +419,7 @@ class JobQuerySet(models.QuerySet):
 
 class Job(UUIDModel, ComponentJob):
     algorithm_image = models.ForeignKey(
-        AlgorithmImage, on_delete=models.CASCADE
+        AlgorithmImage, on_delete=models.PROTECT
     )
     creator = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL
@@ -384,13 +441,14 @@ class Job(UUIDModel, ComponentJob):
     )
     viewers = models.OneToOneField(
         Group,
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name="viewers_of_algorithm_job",
     )
     credits_set = JobQuerySet.as_manager()
 
-    class Meta:
+    class Meta(UUIDModel.Meta, ComponentJob.Meta):
         ordering = ("created",)
+        permissions = [("view_logs", "Can view the jobs logs")]
 
     def __str__(self):
         return f"Job {self.pk}"
@@ -398,18 +456,11 @@ class Job(UUIDModel, ComponentJob):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._public_orig = self.public
+        self._status_orig = self.status
 
     @property
     def container(self):
         return self.algorithm_image
-
-    @property
-    def input_files(self):
-        return [
-            im.file
-            for inpt in self.inputs.all()
-            for im in inpt.image.files.all()
-        ]
 
     @property
     def output_interfaces(self):
@@ -418,7 +469,7 @@ class Job(UUIDModel, ComponentJob):
     @cached_property
     def rendered_result_text(self):
         try:
-            result_dict = get(
+            results = get(
                 [
                     o.value
                     for o in self.outputs.all()
@@ -431,7 +482,7 @@ class Job(UUIDModel, ComponentJob):
         try:
             template_output = JINJA_ENGINE.from_string(
                 self.algorithm_image.algorithm.result_template
-            ).render(result_dict=result_dict)
+            ).render(results=results)
         except (TemplateError, TypeError, ValueError):
             return "Jinja template is invalid"
 
@@ -460,10 +511,35 @@ class Job(UUIDModel, ComponentJob):
 
         if adding:
             self.init_permissions()
+            followers = list(
+                self.algorithm_image.algorithm.editors_group.user_set.all()
+            )
+            if self.creator:
+                followers.append(self.creator)
+            for follower in set(followers):
+                if not is_following(
+                    user=follower,
+                    obj=self.algorithm_image.algorithm,
+                    flag="job-active",
+                ) and not is_following(
+                    user=follower,
+                    obj=self.algorithm_image.algorithm,
+                    flag="job-inactive",
+                ):
+                    follow(
+                        user=follower,
+                        obj=self.algorithm_image.algorithm,
+                        actor_only=False,
+                        send_action=False,
+                        flag="job-active",
+                    )
 
         if adding or self._public_orig != self.public:
             self.update_viewer_groups_for_public()
             self._public_orig = self.public
+
+        if self._status_orig != self.status and self.status == self.SUCCESS:
+            self.algorithm_image.algorithm.update_average_duration()
 
     def init_viewers_group(self):
         self.viewers = Group.objects.create(
@@ -477,9 +553,7 @@ class Job(UUIDModel, ComponentJob):
         # If there is a creator they can view and change this job
         if self.creator:
             self.viewers.user_set.add(self.creator)
-            assign_perm(
-                f"change_{self._meta.model_name}", self.creator, self,
-            )
+            assign_perm("change_job", self.creator, self)
 
     def update_viewer_groups_for_public(self):
         g = Group.objects.get(
@@ -496,6 +570,18 @@ class Job(UUIDModel, ComponentJob):
 
     def remove_viewer(self, user):
         return user.groups.remove(self.viewers)
+
+    def run_job(self, upload_pks=None):
+        # Local import to avoid circular dependency
+        from grandchallenge.algorithms.tasks import (
+            run_algorithm_job_for_inputs,
+        )
+
+        run_job = run_algorithm_job_for_inputs.signature(
+            kwargs={"job_pk": self.pk, "upload_pks": upload_pks},
+            immutable=True,
+        )
+        on_commit(run_job.apply_async)
 
 
 @receiver(post_delete, sender=Job)
@@ -557,6 +643,27 @@ class AlgorithmPermissionRequest(RequestBase):
 
     def __str__(self):
         return f"{self.object_name} registration request by user {self.user.username}"
+
+    def save(self, *args, **kwargs):
+        adding = self._state.adding
+        super().save(*args, **kwargs)
+        if adding:
+            follow(
+                user=self.user, obj=self, actor_only=False, send_action=False,
+            )
+            Notification.send(
+                type=NotificationType.NotificationTypeChoices.ACCESS_REQUEST,
+                message="requested access to",
+                actor=self.user,
+                target=self.base_object,
+            )
+
+    def delete(self):
+        ct = ContentType.objects.filter(
+            app_label=self._meta.app_label, model=self._meta.model_name
+        ).get()
+        Follow.objects.filter(object_id=self.pk, content_type=ct).delete()
+        super().delete()
 
     class Meta(RequestBase.Meta):
         unique_together = (("algorithm", "user"),)

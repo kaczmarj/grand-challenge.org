@@ -6,6 +6,7 @@ from grandchallenge.reader_studies.views import (
     AddQuestionToReaderStudy,
     AnswersRemove,
     EditorsUpdate,
+    QuestionDelete,
     QuestionUpdate,
     ReaderStudyCopy,
     ReaderStudyCreate,
@@ -20,8 +21,8 @@ from grandchallenge.reader_studies.views import (
     ReaderStudyPermissionRequestUpdate,
     ReaderStudyStatistics,
     ReaderStudyUpdate,
-    ReadersProgress,
     ReadersUpdate,
+    UsersProgress,
 )
 
 app_name = "reader-studies"
@@ -75,6 +76,11 @@ urlpatterns = [
         name="question-update",
     ),
     path(
+        "<slug>/questions/<pk>/delete/",
+        QuestionDelete.as_view(),
+        name="question-delete",
+    ),
+    path(
         "<slug>/editors/update/",
         EditorsUpdate.as_view(),
         name="editors-update",
@@ -84,11 +90,7 @@ urlpatterns = [
         ReadersUpdate.as_view(),
         name="readers-update",
     ),
-    path(
-        "<slug>/readers/progress",
-        ReadersProgress.as_view(),
-        name="readers-progress",
-    ),
+    path("<slug>/progress/", UsersProgress.as_view(), name="users-progress",),
     path(
         "<slug>/permission-requests/",
         ReaderStudyPermissionRequestList.as_view(),

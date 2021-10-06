@@ -1,5 +1,7 @@
+import datetime
+
 import factory
-from django.conf import settings
+from factory import fuzzy
 
 from grandchallenge.cases.models import (
     Image,
@@ -117,6 +119,10 @@ class ImageFileFactoryWithMHDFileNoSpacingWith123Size(ImageFileFactory):
     )
 
 
+class ImageFileFactoryWithMHA16Bit(ImageFileFactory):
+    file = factory.django.FileField(from_path=RESOURCE_PATH / "image16bit.mha")
+
+
 class ImageFactoryWithoutImageFile(ImageFactory):
     eye_choice = factory.Iterator([x[0] for x in Image.EYE_CHOICES])
     stereoscopic_choice = factory.Iterator(
@@ -125,10 +131,20 @@ class ImageFactoryWithoutImageFile(ImageFactory):
     field_of_view = factory.Iterator([x[0] for x in Image.FOV_CHOICES])
     study = factory.SubFactory(StudyFactory)
     name = factory.Sequence(lambda n: f"RetinaImage {n}")
-    modality = factory.SubFactory(
-        ImagingModalityFactory, modality=settings.MODALITY_CF
-    )
+    modality = factory.SubFactory(ImagingModalityFactory, modality="CF")
     color_space = factory.Iterator([x[0] for x in Image.COLOR_SPACES])
+    patient_id = factory.Sequence(lambda n: f"Patient {n}")
+    patient_name = fuzzy.FuzzyText(prefix="Patient")
+    patient_birth_date = fuzzy.FuzzyDate(datetime.date(1970, 1, 1))
+    patient_age = fuzzy.FuzzyText(length=4)
+    patient_sex = factory.Iterator(
+        [x[0] for x in Image.PATIENT_SEX_CHOICES] + [""]
+    )
+    study_date = fuzzy.FuzzyDate(datetime.date(1970, 1, 1))
+    study_instance_uid = fuzzy.FuzzyText(length=64)
+    series_instance_uid = fuzzy.FuzzyText(length=64)
+    study_description = factory.Sequence(lambda n: f"Study {n}")
+    series_description = factory.Sequence(lambda n: f"Series {n}")
 
 
 class ImageFactoryWithImageFile(ImageFactoryWithoutImageFile):
@@ -160,9 +176,7 @@ class ImageFactoryWithImageFile3D(ImageFactoryWithImageFile):
             ImageFileFactoryWithMHDFile(image=self)
             ImageFileFactoryWithRAWFile(image=self)
 
-    modality = factory.SubFactory(
-        ImagingModalityFactory, modality=settings.MODALITY_OCT
-    )
+    modality = factory.SubFactory(ImagingModalityFactory, modality="OCT")
 
 
 class ImageFactoryWithImageFile4D(ImageFactoryWithImageFile):
@@ -191,6 +205,19 @@ class ImageFactoryWithImageFile2DLarge(ImageFactoryWithImageFile):
         if create and not extracted:
             ImageFileFactoryWithMHDFile2DLarge(image=self)
             ImageFileFactoryWithRAWFile2DLarge(image=self)
+
+
+class ImageFactoryWithImageFile16Bit(ImageFactoryWithImageFile):
+    @factory.post_generation
+    def files(self, create, extracted, **kwargs):
+        # See https://factoryboy.readthedocs.io/en/latest/recipes.html#simple-many-to-many-relationship
+        if not create:
+            return
+        if extracted:
+            for image in extracted:
+                self.files.add(image)
+        if create and not extracted:
+            ImageFileFactoryWithMHA16Bit(image=self)
 
 
 class ImageFactoryWithImageFile3DLarge3Slices(ImageFactoryWithImageFile3D):

@@ -42,7 +42,6 @@ class ImageAdmin(GuardedModelAdmin):
         "eye_choice",
         "field_of_view",
         "stereoscopic_choice",
-        "archive__slug",
     )
     inlines = [ImageFileInline]
     readonly_fields = ("origin",)
@@ -133,10 +132,10 @@ class RawImageFileAdmin(GuardedModelAdmin):
             raise PermissionDenied
 
         try:
-            saf = StagedAjaxFile(obj.staged_file_id).open()
-            response = HttpResponse(
-                saf.read(), content_type="application/dicom"
-            )
+            with StagedAjaxFile(obj.staged_file_id).open() as saf:
+                response = HttpResponse(
+                    saf.read(), content_type="application/dicom"
+                )
             response[
                 "Content-Disposition"
             ] = f'attachment; filename="{obj.filename}"'
