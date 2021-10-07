@@ -223,9 +223,7 @@ class CompanyDashboard(DetailView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
 
-        products_by_company = self.object.product_set.order_by(
-            "ce_status", "product_name"
-        )
+        products_by_company = self.object.product_set.order_by("product_name")
         context.update({"products_by_company": products_by_company})
 
         return context
