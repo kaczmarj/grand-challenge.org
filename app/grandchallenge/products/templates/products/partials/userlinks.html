@@ -1,0 +1,54 @@
+{% load url %}
+
+{% if user.is_authenticated %}
+    {% if ACTSTREAM_ENABLE %}
+    <li class="nav-item mr-auto">
+        <!--check if user.company has any items set to unpublished-->
+        {% if user.user_profile.has_unread_notifications %}
+            <span class="text-danger float-right mb-n3">
+                <i class="fa fa-xs fa-circle"></i>
+            </span>
+        {% endif %}
+        <!--href to company-profile-->
+        <a class="nav-link pr-1"
+           href="{}"
+           title="Notifications">
+            <i class="align-middle far fa-fw fa-lg fa-bell"></i>
+        </a>
+    </li>
+    {% endif %}
+
+    <li class="nav-item dropdown">
+        <!--if user is company-->
+        <a href="#" class="nav-link dropdown-toggle align-top"
+           data-toggle="dropdown" role="button"
+           aria-haspopup="true"
+           aria-expanded="false">
+           {{ user.company }}  <!--Needs to be created-->
+        </a>
+        <!--elif user is aiforradiology admin-->
+        <a href="#" class="nav-link dropdown-toggle align-top"
+            data-toggle="dropdown" role="button"
+            aria-haspopup="true"
+            aria-expanded="false">
+            {{ user.username }}  <!--Needs to be created-->
+        </a>
+        <!--endif-->
+        <div class="dropdown-menu dropdown-menu-right">
+            <a class="dropdown-item"
+               href="">
+                Signed in as <b>{{ user.username }}</b></a> <!--href to company profile-->
+            <div class="dropdown-divider"></div>
+            <a class="dropdown-item"
+               href="">
+                Your Profile</a> <!--href to company profile-->
+            <a class="dropdown-item"
+               href="{% url 'account_logout' %}?next=/"> <!--needs aiforradiology base template, how?-->
+                Sign out</a>
+        </div>
+    </li>
+{% else %}
+    <li class="pr-2 my-1"><a
+            class="btn btn-radboud"
+            href="{% url 'account_login' %}?next={{ request.build_absolute_uri }}#signin">Sign In</a></li> <!--needs aiforradiology base template, how?-->
+{% endif %}

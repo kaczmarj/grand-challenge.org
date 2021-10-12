@@ -23,6 +23,11 @@
             </li>
           {% endfor %}
         </ul>
+        <ul class="navbar-nav">
+          {% if not hide_userlinks %}
+              {% include "products/partials/userlinks.html" %}
+          {% endif %}
+      </ul>
     </div>
   </div>
 </nav>
