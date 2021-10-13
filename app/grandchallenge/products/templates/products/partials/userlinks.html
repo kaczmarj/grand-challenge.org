@@ -3,7 +3,7 @@
 {% if user.is_authenticated %}
     {% if ACTSTREAM_ENABLE %}
     <li class="nav-item mr-auto">
-        <!--check if user.company has any items set to unpublished-->
+        <!--check if company has any items set to unpublished. add in view. query if unpublished. if company.has_unpublished-->
         {% if user.user_profile.has_unread_notifications %}
             <span class="text-danger float-right mb-n3">
                 <i class="fa fa-xs fa-circle"></i>
@@ -19,36 +19,36 @@
     {% endif %}
 
     <li class="nav-item dropdown">
-        <!--if user is company-->
+        <!--if is_company-->
         <a href="#" class="nav-link dropdown-toggle align-top"
            data-toggle="dropdown" role="button"
            aria-haspopup="true"
            aria-expanded="false">
-           {{ user.company }}  <!--Needs to be created-->
+           {{ company.company_name }}
         </a>
-        <!--elif user is aiforradiology admin-->
+        <!--elif is_admin -->
         <a href="#" class="nav-link dropdown-toggle align-top"
             data-toggle="dropdown" role="button"
             aria-haspopup="true"
             aria-expanded="false">
-            {{ user.username }}  <!--Needs to be created-->
+            {{ user.username }}
         </a>
         <!--endif-->
         <div class="dropdown-menu dropdown-menu-right">
             <a class="dropdown-item"
                href="">
-                Signed in as <b>{{ user.username }}</b></a> <!--href to company profile-->
+                Signed in as <b>{{ user.username }}</b></a> <!--href to company profile determined in view. View returns company which matches user -->
             <div class="dropdown-divider"></div>
             <a class="dropdown-item"
                href="">
-                Your Profile</a> <!--href to company profile-->
+                Your Profile</a> <!--href to company profile determined in view. View returns company which matches user -->
             <a class="dropdown-item"
-               href="{% url 'account_logout' %}?next=/"> <!--needs aiforradiology base template, how?-->
+               href="{% url 'account_logout' %}?next=/"> <!--needs aiforradiology base template, how? see singup.html in profiles. copy paste or make partial to extend-->
                 Sign out</a>
         </div>
     </li>
 {% else %}
     <li class="pr-2 my-1"><a
             class="btn btn-radboud"
-            href="{% url 'account_login' %}?next={{ request.build_absolute_uri }}#signin">Sign In</a></li> <!--needs aiforradiology base template, how?-->
+            href="{% url 'account_login' %}?next={{ request.build_absolute_uri }}#signin">Sign In</a></li> <!--needs aiforradiology base template, how? see singup.html in profiles. copy paste or make partial to extend-->
 {% endif %}
