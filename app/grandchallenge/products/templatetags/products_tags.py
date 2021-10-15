@@ -10,7 +10,7 @@ register = template.Library()
 @register.inclusion_tag("products/partials/navbar.html", takes_context=True)
 def navbar(context):
     url = context.request.resolver_match.url_name
-    return {
+    context.update({
         "items": [
             {
                 "url": "product-list",
@@ -39,7 +39,8 @@ def navbar(context):
                 "title": "Contact",
             },
         ],
-    }
+    })
+    return context
 
 
 @register.simple_tag
