@@ -6,6 +6,8 @@ from grandchallenge.products.views import (
     CompanyList,
     ContactPage,
     ImportDataView,
+    LogInPage,
+    LogOutPage,
     ProductDetail,
     ProductList,
     ProductsPostCreate,
@@ -40,4 +42,6 @@ urlpatterns = [
         ProductsPostUpdate.as_view(),
         name="blogs-update",
     ),
+    path("logout/", LogOutPage.as_view(), name="account_logout"),
+    path("login/", LogInPage.as_view(), name="account_login"),
 ]

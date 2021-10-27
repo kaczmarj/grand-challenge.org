@@ -1,11 +1,12 @@
 from functools import reduce
 from operator import or_
 
+from allauth.account.views import LoginView, LogoutView, SignupView
 from django.contrib.auth.mixins import PermissionRequiredMixin
 from django.contrib.messages.views import SuccessMessageMixin
 from django.db.models import Q
 from django.db.transaction import on_commit
-from django.shortcuts import reverse
+from django.shortcuts import resolve_url, reverse
 from django.views.generic import CreateView, DetailView, ListView, TemplateView
 from django.views.generic.edit import FormView
 
@@ -305,3 +306,32 @@ class ProductsPostDetail(PostDetail):
 class ProductsPostUpdate(PostUpdate):
     template_name = "products/post_form.html"
     form_class = ProductsPostUpdateForm
+
+
+# Subclass view from original django sign up, log in views.
+# from django.contrib.auth.views import LoginView
+class LogInPage(LoginView):
+    template_name = "products/account/login_products.html"
+
+    def get_default_redirect_url(self):
+        """Return the default redirect URL."""
+        # TODO redirect to company dashboard
+        return resolve_url("products:product-list")
+
+
+class LogOutPage(LogoutView):
+    template_name = "products/account/logout_products.html"
+
+    def get_default_redirect_url(self):
+        """Return the default redirect URL."""
+        # TODO redirect to company dashboard
+        return resolve_url("products:product-list")
+
+
+class SignUpPage(SignupView):
+    def get_default_redirect_url(self):
+        """Return the default redirect URL."""
+        # TODO redirect to company dashboard
+        return resolve_url("products:product-list")
+
+    # password change/reset/etc auth

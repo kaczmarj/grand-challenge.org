@@ -24,6 +24,9 @@ class Company(models.Model):
     )
     slug = models.SlugField()
 
+    # initial_moderator = models.EmailField()
+    # add moderators group (see reader studies)
+
     def __str__(self):
         return self.company_name
 

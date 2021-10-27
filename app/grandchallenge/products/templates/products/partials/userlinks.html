@@ -5,19 +5,17 @@
     <li class="nav-item mr-auto">
         <!--check if company has any items set to unpublished. add in view. query if unpublished. if company.has_unpublished-->
         {% if user.user_profile.has_unread_notifications %}
-            <span class="text-danger float-right mb-n3">
-                <i class="fa fa-xs fa-circle"></i>
-            </span>
+            <!--href to company-profile-->
+            <a class="nav-link pr-1"
+            href="{}"
+            title="Notifications">
+                <i class="align-middle far fa-fw fa-lg fa-bell"></i>
+            </a>
         {% endif %}
-        <!--href to company-profile-->
-        <a class="nav-link pr-1"
-           href="{}"
-           title="Notifications">
-            <i class="align-middle far fa-fw fa-lg fa-bell"></i>
-        </a>
     </li>
     {% endif %}
 
+    <!-- create partial and add inclusiontag -->
     <li class="nav-item dropdown">
         <!--if is_company-->
         <a href="#" class="nav-link dropdown-toggle align-top"
@@ -43,12 +41,12 @@
                href="">
                 Your Profile</a> <!--href to company profile determined in view. View returns company which matches user -->
             <a class="dropdown-item"
-               href="{% url 'account_logout' %}?next=/"> <!--needs aiforradiology base template, how? see singup.html in profiles. copy paste or make partial to extend-->
+               href="{% url 'products:account_logout' %}?next=/">
                 Sign out</a>
         </div>
     </li>
 {% else %}
     <li class="pr-2 my-1"><a
             class="btn btn-radboud"
-            href="{% url 'account_login' %}?next={{ request.build_absolute_uri }}#signin">Sign In</a></li> <!--needs aiforradiology base template, how? see singup.html in profiles. copy paste or make partial to extend-->
+            href="{% url 'products:account_login' %}?next={{ request.build_absolute_uri }}#signin">Sign In</a></li>
 {% endif %}
