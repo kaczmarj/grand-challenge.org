@@ -46,7 +46,7 @@
         </div>
     </li>
 {% else %}
-    <li class="pr-2 my-1"><a
-            class="btn btn-radboud"
+    <li class="pr-2"><a
+            class="btn text-radboud"
             href="{% url 'products:account_login' %}?next={{ request.build_absolute_uri }}#signin">Sign In</a></li>
 {% endif %}
