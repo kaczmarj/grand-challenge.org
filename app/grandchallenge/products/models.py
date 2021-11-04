@@ -228,6 +228,12 @@ class Product(models.Model):
         return reverse("products:product-detail", kwargs={"slug": self.slug})
 
 
+class EditorRequest(models.Model):
+    name = models.CharField(max_length=150)
+    email = models.EmailField()
+    company = models.ForeignKey(Company, on_delete=models.CASCADE)
+
+
 class ProjectAirFiles(models.Model):
     title = models.CharField(max_length=150)
     study_file = models.FileField(upload_to=get_pdf_path)

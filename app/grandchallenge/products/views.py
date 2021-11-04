@@ -25,12 +25,14 @@ from grandchallenge.blogs.views import (
     PostUpdate,
 )
 from grandchallenge.products.forms import (
+    EditorRequestForm,
     ImportForm,
     ProductsPostUpdateForm,
     ProjectAirFilesForm,
 )
 from grandchallenge.products.models import (
     Company,
+    EditorRequest,
     Product,
     ProjectAirFiles,
     Status,
@@ -218,6 +220,20 @@ class CompanyDetail(DetailView):
         return context
 
 
+class EditorRequestForm(CreateView):
+    template_name = "products/editor_request_form.html"
+    form_class = EditorRequestForm
+    # add permission statement
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        # add related company
+        return context
+
+    def get_success_url(self):
+        return reverse("products:project-air")  # change to company dashboard
+
+
 class AboutPage(TemplateView):
     template_name = "products/about.html"
 
@@ -337,13 +353,22 @@ class LogOutPage(LogoutView):
 class SignUpPage(SignupView):
     template_name = "products/account/signup_products.html"
     # still takes g-c signup form, but nowhere refered to.
-
-    # at button click --> check if emailaddress was found in editor list, add to corresponding user group.
+    model = EditorRequest
+    # add action to sign up button --> check if emailaddress was found in editorrequest, add to corresponding user group.
+    # newEditor = EditorRequest.objects.filter(email=User.email)
+    # if newEditor:
+    #     newEditor.company.add_editor(newEditor)
+    # else:
+    #     resolve_url("products:account_signup_not_found")
 
     def get_default_redirect_url(self):
         """Return the default redirect URL."""
         # TODO redirect to company dashboard
         return resolve_url("products:product-list")
+
+
+class SignUpNotFoundPage(TemplateView):
+    template_name = "products/signup_not_found_products.html"
 
 
 class EmailPage(EmailView):

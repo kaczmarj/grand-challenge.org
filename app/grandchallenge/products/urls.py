@@ -5,6 +5,7 @@ from grandchallenge.products.views import (
     CompanyDetail,
     CompanyList,
     ContactPage,
+    EditorRequestForm,
     EmailPage,
     ImportDataView,
     LogInPage,
@@ -20,6 +21,7 @@ from grandchallenge.products.views import (
     ProductsPostUpdate,
     ProjectAirForm,
     ProjectAirPage,
+    SignUpNotFoundPage,
     SignUpPage,
 )
 
@@ -33,6 +35,9 @@ urlpatterns = [
     path("project-air/", ProjectAirPage.as_view(), name="project-air"),
     path("product/<slug>/", ProductDetail.as_view(), name="product-detail"),
     path("company/<slug>/", CompanyDetail.as_view(), name="company-detail"),
+    path(
+        "editor-request/", EditorRequestForm.as_view(), name="editor-request"
+    ),
     path("import-data/", ImportDataView.as_view(), name="import-data"),
     path(
         "project-air-files/",
@@ -50,6 +55,11 @@ urlpatterns = [
     path("logout/", LogOutPage.as_view(), name="account_logout"),
     path("login/", LogInPage.as_view(), name="account_login"),
     path("signup/", SignUpPage.as_view(), name="account_signup"),
+    path(
+        "signup-not-found/",
+        SignUpNotFoundPage.as_view(),
+        name="account_signup_not_found",
+    ),
     path(
         "password-change/",
         PasswordChangePage.as_view(),

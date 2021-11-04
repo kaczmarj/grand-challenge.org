@@ -1,3 +1,5 @@
+from crispy_forms.helper import FormHelper
+from crispy_forms.layout import Submit
 from django import forms
 from django.forms import ModelChoiceField
 from django_select2.forms import Select2MultipleWidget
@@ -5,7 +7,7 @@ from guardian.shortcuts import get_objects_for_user
 
 from grandchallenge.blogs.forms import PostUpdateForm
 from grandchallenge.core.forms import SaveFormInitMixin
-from grandchallenge.products.models import ProjectAirFiles
+from grandchallenge.products.models import EditorRequest, ProjectAirFiles
 from grandchallenge.uploads.models import UserUpload
 from grandchallenge.uploads.widgets import UserUploadSingleWidget
 
@@ -30,6 +32,17 @@ class ImportForm(SaveFormInitMixin, forms.Form):
 
         for field in ["products_file", "companies_file", "images_zip"]:
             self.fields[field].queryset = qs
+
+
+class EditorRequestForm(SaveFormInitMixin, forms.ModelForm):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper(self)
+        self.helper.layout.append(Submit("save", "Save and send e-mail"))
+
+    class Meta:
+        model = EditorRequest
+        fields = ["name", "email"]
 
 
 class ProjectAirFilesForm(SaveFormInitMixin, forms.ModelForm):

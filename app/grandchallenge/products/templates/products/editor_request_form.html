@@ -1,0 +1,22 @@
+{% extends 'products/base.html' %}
+{% load crispy_forms_tags %}
+{% load static %}
+
+
+{% block title %}
+    Add editor - {{ block.super }}
+{% endblock %}
+
+{% block content %}
+  <h1>Add editor</h1>
+  <p>An e-mail will be sent to the invited editor with the request to create an account.</p>
+
+  {% crispy form %}
+
+{% endblock %}
+
+{% block script %}
+    {{ block.super }}
+    <script type="text/javascript"
+            src="{% static 'js/unsavedform.js' %}"></script>
+{% endblock %}
