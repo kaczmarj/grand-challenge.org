@@ -5,9 +5,13 @@ from grandchallenge.products.views import (
     CompanyDetail,
     CompanyList,
     ContactPage,
+    EmailPage,
     ImportDataView,
     LogInPage,
     LogOutPage,
+    PasswordChangePage,
+    PasswordResetFromKeyPage,
+    PasswordResetPage,
     ProductDetail,
     ProductList,
     ProductsPostCreate,
@@ -16,6 +20,7 @@ from grandchallenge.products.views import (
     ProductsPostUpdate,
     ProjectAirForm,
     ProjectAirPage,
+    SignUpPage,
 )
 
 app_name = "products"
@@ -44,4 +49,21 @@ urlpatterns = [
     ),
     path("logout/", LogOutPage.as_view(), name="account_logout"),
     path("login/", LogInPage.as_view(), name="account_login"),
+    path("signup/", SignUpPage.as_view(), name="account_signup"),
+    path(
+        "password-change/",
+        PasswordChangePage.as_view(),
+        name="account_change_password",
+    ),
+    path(
+        "password-reset-from-key/",
+        PasswordResetFromKeyPage.as_view(),
+        name="account_reset_password_from_key",
+    ),
+    path(
+        "password-reset/",
+        PasswordResetPage.as_view(),
+        name="account_reset_password",
+    ),
+    path("email/", EmailPage.as_view(), name="account_email"),
 ]

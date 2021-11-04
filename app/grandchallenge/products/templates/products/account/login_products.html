@@ -8,7 +8,7 @@
 
     <h1>{% trans "Sign In" %}</h1>
 
-
+    {% url "products:account_signup" as signup_url %}
     <p>{% blocktrans %}Sign in is only relevant to vendors listed on www.AIforRadiology.com. If this is the first time signing in, then please
         <a href="{{ signup_url }}">sign up</a> first.{% endblocktrans %}</p>
 

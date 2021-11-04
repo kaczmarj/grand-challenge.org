@@ -1,7 +1,15 @@
 from functools import reduce
 from operator import or_
 
-from allauth.account.views import LoginView, LogoutView, SignupView
+from allauth.account.views import (
+    EmailView,
+    LoginView,
+    LogoutView,
+    PasswordChangeView,
+    PasswordResetFromKeyView,
+    PasswordResetView,
+    SignupView,
+)
 from django.contrib.auth.mixins import PermissionRequiredMixin
 from django.contrib.messages.views import SuccessMessageMixin
 from django.db.models import Q
@@ -308,8 +316,6 @@ class ProductsPostUpdate(PostUpdate):
     form_class = ProductsPostUpdateForm
 
 
-# Subclass view from original django sign up, log in views.
-# from django.contrib.auth.views import LoginView
 class LogInPage(LoginView):
     template_name = "products/account/login_products.html"
 
@@ -329,9 +335,48 @@ class LogOutPage(LogoutView):
 
 
 class SignUpPage(SignupView):
+    template_name = "products/account/signup_products.html"
+    # still takes g-c signup form, but nowhere refered to.
+
     def get_default_redirect_url(self):
         """Return the default redirect URL."""
         # TODO redirect to company dashboard
         return resolve_url("products:product-list")
 
-    # password change/reset/etc auth
+
+class EmailPage(EmailView):
+    template_name = "products/account/email_products.html"
+    # how to check?
+
+    def get_default_redirect_url(self):
+        """Return the default redirect URL."""
+        # TODO redirect to company dashboard
+        return resolve_url("products:product-list")
+
+
+class PasswordChangePage(PasswordChangeView):
+    template_name = "products/account/password_change_products.html"
+    # how to check?
+
+    def get_default_redirect_url(self):
+        """Return the default redirect URL."""
+        # TODO redirect to company dashboard
+        return resolve_url("products:product-list")
+
+
+class PasswordResetFromKeyPage(PasswordResetFromKeyView):
+    template_name = "products/account/password_reset_from_key_products.html"
+
+    def get_default_redirect_url(self):
+        """Return the default redirect URL."""
+        # TODO redirect to company dashboard
+        return resolve_url("products:product-list")
+
+
+class PasswordResetPage(PasswordResetView):
+    template_name = "products/account/password_reset_products.html"
+
+    def get_default_redirect_url(self):
+        """Return the default redirect URL."""
+        # TODO redirect to company dashboard
+        return resolve_url("products:product-list")
