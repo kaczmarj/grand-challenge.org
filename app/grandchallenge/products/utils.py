@@ -108,6 +108,7 @@ class DataImporter:
         c.description_short = self._split(row["Company description"], 200)
         slug = slugify(row["Company name"])
         c.slug = slug
+        c.initial_editor = row["Email address contact person"]
         img_file = self.images_path.glob(f"**/logo/{slug}.*")
         for file in img_file:
             c.logo = ImageFile(open(file, "rb"))

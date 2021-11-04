@@ -338,6 +338,8 @@ class SignUpPage(SignupView):
     template_name = "products/account/signup_products.html"
     # still takes g-c signup form, but nowhere refered to.
 
+    # at button click --> check if emailaddress was found in editor list, add to corresponding user group.
+
     def get_default_redirect_url(self):
         """Return the default redirect URL."""
         # TODO redirect to company dashboard

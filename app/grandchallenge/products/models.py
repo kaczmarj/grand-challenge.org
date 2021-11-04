@@ -1,5 +1,7 @@
+from django.contrib.auth.models import Group
 from django.db import models
 from django.utils import timezone
+from guardian.shortcuts import assign_perm
 
 from grandchallenge.core.storage import get_logo_path, get_pdf_path
 from grandchallenge.subdomains.utils import reverse
@@ -24,8 +26,14 @@ class Company(models.Model):
     )
     slug = models.SlugField()
 
-    # initial_moderator = models.EmailField()
-    # add moderators group (see reader studies)
+    initial_editor = models.EmailField()
+    editors_group = models.OneToOneField(
+        Group,
+        on_delete=models.PROTECT,
+        editable=False,
+        related_name="editors_of_company",
+        null=True,
+    )
 
     def __str__(self):
         return self.company_name
@@ -33,6 +41,68 @@ class Company(models.Model):
     class Meta:
         verbose_name_plural = "companies"
         ordering = ("pk",)
+
+    def create_groups(self):
+        self.editors_group = Group.objects.create(
+            name=f"{self._meta.app_label}_{self._meta.model_name}_{self.pk}_editors"
+        )
+
+    def assign_permissions(self):
+        # Allow the editors group to change, read and view this study
+        assign_perm(
+            f"change_{self._meta.model_name}", self.editors_group, self
+        )
+        assign_perm(f"read_{self._meta.model_name}", self.editors_group, self)
+        assign_perm(f"view_{self._meta.model_name}", self.editors_group, self)
+
+        # Allow readers and editors to add Products (globally)
+        # adding them to this Company is checked in the serializers as
+        # there is no get_permission_object in django rest framework.
+        assign_perm(
+            f"{Product._meta.app_label}.add_{Product._meta.model_name}",
+            self.editors_group,
+        )
+
+        # BELOW NECESSARY?
+        # reg_and_anon = Group.objects.get(
+        #     name=settings.REGISTERED_AND_ANON_USERS_GROUP_NAME
+        # )
+
+        # if self.public:
+        #     assign_perm(f"view_{self._meta.model_name}", reg_and_anon, self)
+        # else:
+        #     remove_perm(f"view_{self._meta.model_name}", reg_and_anon, self)
+
+    def is_editor(self, user):
+        """Checks if ``user`` is an editor for this ``Company``."""
+        return user.groups.filter(pk=self.editors_group.pk).exists()
+
+    def add_editor(self, user):
+        """Adds ``user`` as an editor for this ``Company``."""
+        return user.groups.add(self.editors_group)
+
+    def remove_editor(self, user):
+        """Removes ``user`` as an editor for this ``Company``."""
+        return user.groups.remove(self.editors_group)
+
+    # BELOW NECESSARY?
+    def save(self, *args, **kwargs):
+        adding = self._state.adding
+
+        if adding:
+            self.create_groups()
+
+        super().save(*args, **kwargs)
+
+        self.assign_permissions()
+
+    # BELOW NECESSARY?
+    # def delete(self):
+    #     ct = ContentType.objects.filter(
+    #         app_label=self._meta.app_label, model=self._meta.model_name
+    #     ).get()
+    #     Follow.objects.filter(object_id=self.pk, content_type=ct).delete()
+    #     super().delete()
 
     def get_absolute_url(self):
         return reverse("products:company-detail", kwargs={"slug": self.slug})
