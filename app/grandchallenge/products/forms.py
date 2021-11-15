@@ -35,7 +35,7 @@ class ImportForm(SaveFormInitMixin, forms.Form):
 
 
 class EditorRequestForm(SaveFormInitMixin, forms.ModelForm):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, company=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.helper = FormHelper(self)
         self.helper.layout.append(Submit("save", "Save and send e-mail"))

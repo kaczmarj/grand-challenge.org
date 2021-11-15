@@ -14,7 +14,7 @@ from django.contrib.auth.mixins import PermissionRequiredMixin
 from django.contrib.messages.views import SuccessMessageMixin
 from django.db.models import Q
 from django.db.transaction import on_commit
-from django.shortcuts import resolve_url, reverse
+from django.shortcuts import get_object_or_404, resolve_url, reverse
 from django.views.generic import CreateView, DetailView, ListView, TemplateView
 from django.views.generic.edit import FormView
 
@@ -225,10 +225,13 @@ class EditorRequestForm(CreateView):
     form_class = EditorRequestForm
     # add permission statement
 
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
-        # add related company
-        return context
+    @property
+    def company(self):
+        return get_object_or_404(Company, slug=self.kwargs["slug"])
+
+    def form_valid(self, form):
+        form.instance.company = self.company
+        return super().form_valid(form)
 
     def get_success_url(self):
         return reverse("products:project-air")  # change to company dashboard
@@ -355,9 +358,10 @@ class SignUpPage(SignupView):
     # still takes g-c signup form, but nowhere refered to.
     model = EditorRequest
     # add action to sign up button --> check if emailaddress was found in editorrequest, add to corresponding user group.
-    # newEditor = EditorRequest.objects.filter(email=User.email)
+    # newEditor = EditorRequest.objects.filter(email=User.email).first()
     # if newEditor:
     #     newEditor.company.add_editor(newEditor)
+    #     newEditor.delete()
     # else:
     #     resolve_url("products:account_signup_not_found")
 

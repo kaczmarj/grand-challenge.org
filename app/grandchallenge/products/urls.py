@@ -36,7 +36,9 @@ urlpatterns = [
     path("product/<slug>/", ProductDetail.as_view(), name="product-detail"),
     path("company/<slug>/", CompanyDetail.as_view(), name="company-detail"),
     path(
-        "editor-request/", EditorRequestForm.as_view(), name="editor-request"
+        "company/<slug>/editor-request/",
+        EditorRequestForm.as_view(),
+        name="editor-request",
     ),
     path("import-data/", ImportDataView.as_view(), name="import-data"),
     path(
