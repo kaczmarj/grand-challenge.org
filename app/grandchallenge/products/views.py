@@ -28,6 +28,7 @@ from grandchallenge.products.forms import (
     EditorRequestForm,
     ImportForm,
     ProductsPostUpdateForm,
+    ProductsSignupForm,
     ProjectAirFilesForm,
 )
 from grandchallenge.products.models import (
@@ -355,6 +356,7 @@ class LogOutPage(LogoutView):
 
 class SignUpPage(SignupView):
     template_name = "products/account/signup_products.html"
+    form_class = ProductsSignupForm
     # still takes g-c signup form, but nowhere refered to.
     model = EditorRequest
     # add action to sign up button --> check if emailaddress was found in editorrequest, add to corresponding user group.
