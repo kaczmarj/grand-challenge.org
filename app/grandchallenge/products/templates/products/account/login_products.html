@@ -19,7 +19,7 @@
             <input type="hidden" name="{{ redirect_field_name }}" value="{{ redirect_field_value }}"/>
         {% endif %}
         <button class="btn btn-radboud" type="submit">{% trans "Sign In" %}</button>
-        <a class="btn btn-secondary" href="{% url 'account_reset_password' %}">{% trans "Forgot Password?" %}</a>
+        <a class="btn btn-secondary" href="{% url 'products:account_reset_password' %}">{% trans "Forgot Password?" %}</a>
     </form>
 
 {% endblock %}

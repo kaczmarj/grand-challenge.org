@@ -2,6 +2,8 @@ from functools import reduce
 from operator import or_
 
 from allauth.account.views import (
+    ConfirmEmailView,
+    EmailVerificationSentView,
     EmailView,
     LoginView,
     LogoutView,
@@ -408,6 +410,24 @@ class PasswordResetFromKeyPage(PasswordResetFromKeyView):
 
 class PasswordResetPage(PasswordResetView):
     template_name = "products/account/password_reset_products.html"
+
+    def get_default_redirect_url(self):
+        """Return the default redirect URL."""
+        # TODO redirect to company dashboard
+        return resolve_url("products:product-list")
+
+
+class EmailConfirmPage(ConfirmEmailView):
+    template_name = "products/account/email_confirm_products.html"
+
+    def get_default_redirect_url(self):
+        """Return the default redirect URL."""
+        # TODO redirect to company dashboard
+        return resolve_url("products:product-list")
+
+
+class EmailVerificationSentPage(EmailVerificationSentView):
+    template_name = "products/account/verification_sent_products.html"
 
     def get_default_redirect_url(self):
         """Return the default redirect URL."""

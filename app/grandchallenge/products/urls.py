@@ -1,4 +1,4 @@
-from django.urls import path
+from django.urls import path, re_path
 
 from grandchallenge.products.views import (
     AboutPage,
@@ -6,7 +6,9 @@ from grandchallenge.products.views import (
     CompanyList,
     ContactPage,
     EditorRequestForm,
+    EmailConfirmPage,
     EmailPage,
+    EmailVerificationSentPage,
     ImportDataView,
     LogInPage,
     LogOutPage,
@@ -63,19 +65,29 @@ urlpatterns = [
         name="account_signup_not_found",
     ),
     path(
-        "password-change/",
+        "password/change/",
         PasswordChangePage.as_view(),
         name="account_change_password",
     ),
-    path(
-        "password-reset-from-key/",
+    re_path(
+        r"^password/reset/key/(?P<uidb36>[0-9A-Za-z]+)-(?P<key>.+)/$",
         PasswordResetFromKeyPage.as_view(),
         name="account_reset_password_from_key",
     ),
     path(
-        "password-reset/",
+        "password/reset/",
         PasswordResetPage.as_view(),
         name="account_reset_password",
     ),
     path("email/", EmailPage.as_view(), name="account_email"),
+    path(
+        "confirm-email/",
+        EmailVerificationSentPage.as_view(),
+        name="account_email_verification_sent",
+    ),
+    re_path(
+        r"^confirm-email/(?P<key>[-:\w]+)/$",
+        EmailConfirmPage.as_view(),
+        name="account_confirm_email",
+    ),
 ]
