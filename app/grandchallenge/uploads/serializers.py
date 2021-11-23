@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Dict
 
 from rest_framework.exceptions import ValidationError
@@ -25,6 +26,7 @@ class UserUploadSerializer(ModelSerializer):
             "key",
             "s3_upload_id",
             "status",
+            "api_url",
         )
         read_only_fields = (
             "pk",
@@ -33,6 +35,7 @@ class UserUploadSerializer(ModelSerializer):
             "key",
             "s3_upload_id",
             "status",
+            "api_url",
         )
 
 
@@ -43,6 +46,11 @@ class UserUploadCreateSerializer(UserUploadSerializer):
             for field in UserUploadSerializer.Meta.read_only_fields
             if field != "filename"
         ]
+
+    def validate_filename(self, value):
+        if value != Path(value).name:
+            raise ValidationError(f"{value} is not a valid filename")
+        return value
 
     def validate(self, data):
         if data.get("creator") is None:

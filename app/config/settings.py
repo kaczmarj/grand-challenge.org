@@ -5,7 +5,6 @@ from distutils.util import strtobool as strtobool_i
 from itertools import product
 
 import sentry_sdk
-from corsheaders.defaults import default_headers
 from disposable_email_domains import blocklist
 from django.contrib.messages import constants as messages
 from django.urls import reverse
@@ -121,6 +120,9 @@ DOCUMENTATION_HELP_FORUM_SLUG = os.environ.get(
     "DOCUMENTATION_HELP_FORUM_SLUG", "general"
 )
 
+# About Flatpage
+FLATPAGE_ABOUT_URL = os.environ.get("FLATPAGE_ABOUT_URL", "/about/")
+
 ##############################################################################
 #
 # Storage
@@ -205,12 +207,12 @@ CLOUDFRONT_URL_EXPIRY_SECONDS = int(
 # Caching
 #
 ##############################################################################
-REDIS_HOSTNAME = os.environ.get("REDIS_HOSTNAME", "redis")
+REDIS_ENDPOINT = os.environ.get("REDIS_ENDPOINT", "redis://redis:6379")
 
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": f"redis://{REDIS_HOSTNAME}:6379/1",
+        "LOCATION": f"{REDIS_ENDPOINT}/0",
         "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient"},
     },
     "machina_attachments": {
@@ -284,7 +286,7 @@ PERMISSIONS_POLICY = {
     "display-capture": [],
     "document-domain": [],
     "encrypted-media": [],
-    "fullscreen": [],
+    "fullscreen": ["self"],
     "geolocation": [],
     "gyroscope": [],
     "interest-cohort": [],
@@ -352,6 +354,7 @@ TEMPLATES = [
                 "grandchallenge.core.context_processors.sentry_dsn",
                 "grandchallenge.core.context_processors.footer_links",
                 "grandchallenge.core.context_processors.help_forum",
+                "grandchallenge.core.context_processors.about_page",
                 "machina.core.context_processors.metadata",
             ],
             "loaders": [
@@ -501,6 +504,7 @@ LOCAL_APPS = [
     "grandchallenge.codebuild",
     "grandchallenge.timezones",
     "grandchallenge.documentation",
+    "grandchallenge.flatpages",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + LOCAL_APPS + THIRD_PARTY_APPS
@@ -679,6 +683,7 @@ MARKDOWNX_MARKDOWN_EXTENSIONS = [
     "markdown.extensions.fenced_code",
     "markdown.extensions.tables",
     "markdown.extensions.sane_lists",
+    "markdown.extensions.codehilite",
     BS4Extension(),
 ]
 MARKDOWNX_MARKDOWNIFY_FUNCTION = (
@@ -817,12 +822,6 @@ CORS_ORIGIN_REGEX_WHITELIST = [
     rf"^https:\/\/{VALID_SUBDOMAIN_REGEX}{re.escape(SESSION_COOKIE_DOMAIN)}$",
     rf"^https:\/\/{VALID_SUBDOMAIN_REGEX}.static.observableusercontent.com$",
 ]
-CORS_ALLOW_HEADERS = [
-    *default_headers,
-    "content-range",
-    "content-disposition",
-    "content-description",
-]
 # SESSION_COOKIE_SAMESITE should be set to "lax" so won't send credentials
 # across domains, but this will allow workstations to access the api
 CORS_ALLOW_CREDENTIALS = True
@@ -887,9 +886,7 @@ if os.environ.get("BROKER_TYPE", "").lower() == "sqs":
         }
     )
 else:
-    CELERY_BROKER_URL = os.environ.get(
-        "BROKER_URL", f"redis://{REDIS_HOSTNAME}:6379/0"
-    )
+    CELERY_BROKER_URL = os.environ.get("BROKER_URL", f"{REDIS_ENDPOINT}/1")
 
 # Keep results of sent emails
 CELERY_EMAIL_CHUNK_SIZE = 1
@@ -1051,6 +1048,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "grandchallenge.jqfileupload.tasks.cleanup_stale_uploads",
         "schedule": timedelta(hours=1),
     },
+    "delete_old_user_uploads": {
+        "task": "grandchallenge.uploads.tasks.delete_old_user_uploads",
+        "schedule": timedelta(hours=1),
+    },
     "clear_sessions": {
         "task": "grandchallenge.core.tasks.clear_sessions",
         "schedule": timedelta(days=1),
@@ -1061,6 +1062,10 @@ CELERY_BEAT_SCHEDULE = {
     },
     "validate_external_challenges": {
         "task": "grandchallenge.challenges.tasks.check_external_challenge_urls",
+        "schedule": timedelta(days=1),
+    },
+    "update_associated_challenges": {
+        "task": "grandchallenge.algorithms.tasks.update_associated_challenges",
         "schedule": timedelta(days=1),
     },
     **{
@@ -1080,9 +1085,6 @@ CELERY_BEAT_SCHEDULE = {
 
 # The name of the group whose members will be able to create algorithms
 ALGORITHMS_CREATORS_GROUP_NAME = "algorithm_creators"
-
-# The name of the group whose uploaded dicom files will be retained if the image builder fails
-DICOM_DATA_CREATORS_GROUP_NAME = "dicom_creators"
 
 # Disallow some challenge names due to subdomain or media folder clashes
 DISALLOWED_CHALLENGE_NAMES = {
@@ -1140,12 +1142,15 @@ MAX_SITK_FILE_SIZE = 268_435_456  # 256 mb
 # The maximum size of all the files in an upload session in bytes
 UPLOAD_SESSION_MAX_BYTES = 10_737_418_240  # 10 gb
 
-# The maximum size of predictions files
-PREDICTIONS_FILE_MAX_BYTES = 3_221_223_823  # 3 GB
-
 # Some forms have a lot of data, such as a reader study update view
 # that can contain reports about the medical images
 DATA_UPLOAD_MAX_MEMORY_SIZE = 16_777_216  # 16 mb
+
+# Some forms have a lot of fields, such as uploads of images
+# with many slices
+DATA_UPLOAD_MAX_NUMBER_FIELDS = int(
+    os.environ.get("DATA_UPLOAD_MAX_NUMBER_FIELDS", "2048")
+)
 
 # Default maximum width or height for thumbnails in retina workstation
 RETINA_DEFAULT_THUMBNAIL_SIZE = 128

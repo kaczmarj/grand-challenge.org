@@ -17,6 +17,7 @@ from django.core.validators import RegexValidator
 from django.db import models
 from django.db.models import Avg, F, QuerySet
 from django.db.transaction import on_commit
+from django.forms import ModelChoiceField, ModelMultipleChoiceField
 from django.utils.functional import cached_property
 from django.utils.module_loading import import_string
 from django.utils.text import get_valid_filename
@@ -45,7 +46,7 @@ from grandchallenge.core.validators import (
     JSONValidator,
     MimeTypeValidator,
 )
-from grandchallenge.jqfileupload.widgets.uploader import UploadedAjaxFileList
+from grandchallenge.uploads.models import UserUpload
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ class InterfaceKindChoices(models.TextChoices):
     FLOAT = "FLT", _("Float")
     BOOL = "BOOL", _("Bool")
     ANY = "JSON", _("Anything")
+    CHART = "CHART", _("Chart")
 
     # Annotation Types
     TWO_D_BOUNDING_BOX = "2DBB", _("2D bounding box")
@@ -82,6 +84,12 @@ class InterfaceKindChoices(models.TextChoices):
     IMAGE = "IMG", _("Image")
     SEGMENTATION = "SEG", _("Segmentation")
     HEAT_MAP = "HMAP", _("Heat Map")
+
+    # File types
+    PDF = "PDF", _("PDF file")
+    SQREG = "SQREG", _("SQREG file")
+    THUMBNAIL_JPG = "JPEG", _("Thumbnail jpg")
+    THUMBNAIL_PNG = "PNG", _("Thumbnail png")
 
     # Legacy support
     CSV = "CSV", _("CSV file")
@@ -118,6 +126,7 @@ class InterfaceKind:
         * Multiple polygons
         * Choice (string)
         * Multiple choice (array of strings)
+        * Chart
 
         Example json for 2D bounding box annotation
 
@@ -269,6 +278,26 @@ class InterfaceKind:
                 "version": { "major": 1, "minor": 0 }
             }
 
+        Example json for Chart
+
+        .. code-block:: json
+
+            {
+                "description": "A simple bar chart with embedded data.",
+                "data": {
+                    "values": [
+                        {"a": "A", "b": 28}, {"a": "B", "b": 55}, {"a": "C", "b": 43},
+                        {"a": "D", "b": 91}, {"a": "E", "b": 81}, {"a": "F", "b": 53},
+                        {"a": "G", "b": 19}, {"a": "H", "b": 87}, {"a": "I", "b": 52}
+                    ]
+                },
+                "mark": "bar",
+                "encoding": {
+                    "x": {"field": "a", "type": "nominal", "axis": {"labelAngle": 0}},
+                    "y": {"field": "b", "type": "quantitative"}
+                }
+            }
+
         """
         return (
             InterfaceKind.InterfaceKindChoices.STRING,
@@ -286,6 +315,7 @@ class InterfaceKind:
             InterfaceKind.InterfaceKindChoices.CHOICE,
             InterfaceKind.InterfaceKindChoices.MULTIPLE_CHOICE,
             InterfaceKind.InterfaceKindChoices.ANY,
+            InterfaceKind.InterfaceKindChoices.CHART,
         )
 
     @staticmethod
@@ -308,16 +338,26 @@ class InterfaceKind:
 
         * CSV file
         * ZIP file
+        * PDF file
+        * SQREG file
+        * Thumbnail JPG
+        * Thumbnail PNG
         """
         return (
             InterfaceKind.InterfaceKindChoices.CSV,
             InterfaceKind.InterfaceKindChoices.ZIP,
+            InterfaceKind.InterfaceKindChoices.PDF,
+            InterfaceKind.InterfaceKindChoices.SQREG,
+            InterfaceKind.InterfaceKindChoices.THUMBNAIL_JPG,
+            InterfaceKind.InterfaceKindChoices.THUMBNAIL_PNG,
         )
 
     @classmethod
     def get_default_field(cls, *, kind):
-        if kind in {*cls.interface_type_file(), *cls.interface_type_image()}:
-            return UploadedAjaxFileList
+        if kind in {*cls.interface_type_file()}:
+            return ModelChoiceField
+        elif kind in {*cls.interface_type_image()}:
+            return ModelMultipleChoiceField
         elif kind in {
             InterfaceKind.InterfaceKindChoices.STRING,
             InterfaceKind.InterfaceKindChoices.CHOICE,
@@ -335,9 +375,25 @@ class InterfaceKind:
     @classmethod
     def get_file_mimetypes(cls, *, kind):
         if kind == InterfaceKind.InterfaceKindChoices.CSV:
-            return ("text/plain",)
+            return (
+                "application/csv",
+                "application/vnd.ms-excel",
+                "text/csv",
+                "text/plain",
+            )
         elif kind == InterfaceKind.InterfaceKindChoices.ZIP:
-            return ("application/zip",)
+            return (
+                "application/zip",
+                "application/x-zip-compressed",
+            )
+        elif kind == InterfaceKind.InterfaceKindChoices.PDF:
+            return ("application/pdf",)
+        elif kind == InterfaceKind.InterfaceKindChoices.THUMBNAIL_JPG:
+            return ("image/jpeg",)
+        elif kind == InterfaceKind.InterfaceKindChoices.THUMBNAIL_PNG:
+            return ("image/png",)
+        elif kind == InterfaceKind.InterfaceKindChoices.SQREG:
+            return ("application/vnd.sqlite3",)
         else:
             raise RuntimeError(f"Unknown kind {kind}")
 
@@ -372,7 +428,7 @@ class ComponentInterface(models.Model):
     )
     kind = models.CharField(
         blank=False,
-        max_length=4,
+        max_length=5,
         choices=Kind.choices,
         help_text=(
             "What is the type of this interface? Used to validate interface "
@@ -425,7 +481,7 @@ class ComponentInterface(models.Model):
 
     @property
     def save_in_object_store(self):
-        # CSV and ZIP should always be saved to S3, others are optional
+        # CSV, ZIP, PDF, SQREG and Thumbnail should always be saved to S3, others are optional
         return (
             self.is_image_kind
             or self.kind in InterfaceKind.interface_type_file()
@@ -459,11 +515,12 @@ class ComponentInterface(models.Model):
         if self.kind in InterfaceKind.interface_type_json():
             if not self.relative_path.endswith(".json"):
                 raise ValidationError("Relative path should end with .json")
-        elif self.kind in InterfaceKind.interface_type_file():
-            if not self.relative_path.endswith(f".{self.kind.lower()}"):
-                raise ValidationError(
-                    f"Relative path should end with .{self.kind.lower()}"
-                )
+        elif self.kind in InterfaceKind.interface_type_file() and not self.relative_path.endswith(
+            f".{self.kind.lower()}"
+        ):
+            raise ValidationError(
+                f"Relative path should end with .{self.kind.lower()}"
+            )
 
         if self.kind in InterfaceKind.interface_type_image():
             if not self.relative_path.startswith("images/"):
@@ -530,13 +587,28 @@ class ComponentInterfaceValue(models.Model):
         upload_to=component_interface_value_path,
         storage=protected_s3_storage,
         validators=[
-            ExtensionValidator(allowed_extensions=(".json", ".zip", ".csv")),
+            ExtensionValidator(
+                allowed_extensions=(
+                    ".json",
+                    ".zip",
+                    ".csv",
+                    ".png",
+                    ".jpg",
+                    ".jpeg",
+                    ".pdf",
+                    ".sqreg",
+                )
+            ),
             MimeTypeValidator(
                 allowed_types=(
                     "application/json",
                     "application/zip",
                     "text/plain",
                     "application/csv",
+                    "application/pdf",
+                    "image/png",
+                    "image/jpeg",
+                    "application/vnd.sqlite3",
                 )
             ),
         ],
@@ -899,7 +971,9 @@ class ComponentImage(models.Model):
     creator = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL
     )
-    staged_image_uuid = models.UUIDField(blank=True, null=True, editable=False)
+    user_upload = models.ForeignKey(
+        UserUpload, blank=True, null=True, on_delete=models.SET_NULL,
+    )
     image = models.FileField(
         blank=True,
         upload_to=docker_image_path,

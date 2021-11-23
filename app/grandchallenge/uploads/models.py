@@ -4,6 +4,7 @@ import boto3
 from botocore.config import Config
 from django.conf import settings
 from django.db import models
+from django.db.models.fields.files import FieldFile
 from django.db.models.signals import post_delete
 from django.dispatch import receiver
 from django.utils.datetime_safe import strftime
@@ -14,6 +15,7 @@ from guardian.shortcuts import assign_perm
 
 from grandchallenge.core.models import UUIDModel
 from grandchallenge.core.storage import public_s3_storage
+from grandchallenge.subdomains.utils import reverse
 from grandchallenge.verifications.models import Verification
 
 
@@ -43,6 +45,19 @@ class SummernoteAttachment(AbstractAttachment):
     )
 
 
+_S3_CLIENT_KWARGS = {"endpoint_url": settings.AWS_S3_ENDPOINT_URL}
+_UPLOADS_CLIENT = boto3.client("s3", **_S3_CLIENT_KWARGS)
+_ACCELERATED_UPLOADS_CLIENT = boto3.client(
+    "s3",
+    **_S3_CLIENT_KWARGS,
+    config=Config(
+        s3={
+            "use_accelerate_endpoint": settings.UPLOADS_S3_USE_ACCELERATE_ENDPOINT
+        }
+    ),
+)
+
+
 class UserUpload(UUIDModel):
     LIST_MAX_ITEMS = 1000
 
@@ -59,14 +74,10 @@ class UserUpload(UUIDModel):
     status = models.PositiveSmallIntegerField(
         choices=StatusChoices.choices, default=StatusChoices.PENDING
     )
-    s3_upload_id = models.CharField(max_length=128, blank=True)
+    s3_upload_id = models.CharField(max_length=192, blank=True)
 
     class Meta(UUIDModel.Meta):
         pass
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.__client = None
 
     def save(self, *args, **kwargs):
         adding = self._state.adding
@@ -81,16 +92,11 @@ class UserUpload(UUIDModel):
 
     @property
     def _client(self):
-        if self.__client is None:
-            config = Config(
-                s3={
-                    "use_accelerate_endpoint": settings.UPLOADS_S3_USE_ACCELERATE_ENDPOINT
-                }
-            )
-            self.__client = boto3.client(
-                "s3", config=config, endpoint_url=settings.AWS_S3_ENDPOINT_URL,
-            )
-        return self.__client
+        return _UPLOADS_CLIENT
+
+    @property
+    def _accelerated_client(self):
+        return _ACCELERATED_UPLOADS_CLIENT
 
     @property
     def bucket(self):
@@ -176,6 +182,10 @@ class UserUpload(UUIDModel):
 
         return objects
 
+    @property
+    def api_url(self):
+        return reverse("api:upload-detail", kwargs={"pk": self.pk})
+
     def assign_permissions(self):
         assign_perm("view_userupload", self.creator, self)
         assign_perm("change_userupload", self.creator, self)
@@ -202,7 +212,7 @@ class UserUpload(UUIDModel):
         if self.status != self.StatusChoices.INITIALIZED:
             raise RuntimeError("Upload is not initialized")
 
-        return self._client.generate_presigned_url(
+        return self._accelerated_client.generate_presigned_url(
             "upload_part",
             Params={
                 "Bucket": self.bucket,
@@ -262,6 +272,32 @@ class UserUpload(UUIDModel):
         return self._client.download_fileobj(
             Bucket=self.bucket, Key=self.key, Fileobj=fileobj
         )
+
+    def copy_object(self, *, to_field, save=True):
+        """Copies the object to a Django file field on a model"""
+        if not isinstance(to_field, FieldFile):
+            raise ValueError("to_field must be a FieldFile")
+
+        target_client = to_field.storage.connection.meta.client
+        target_bucket = to_field.storage.bucket.name
+        target_key = to_field.field.generate_filename(
+            instance=to_field.instance, filename=self.filename
+        )
+        target_key = to_field.storage.get_available_name(
+            name=target_key, max_length=to_field.field.max_length
+        )
+
+        target_client.copy(
+            CopySource={"Bucket": self.bucket, "Key": self.key},
+            Bucket=target_bucket,
+            Key=target_key,
+        )
+
+        to_field.name = target_key
+
+        # Save the object because it has changed, unless save is False
+        if save:
+            to_field.instance.save()
 
     def delete_object(self):
         if self.status != self.StatusChoices.COMPLETED:
