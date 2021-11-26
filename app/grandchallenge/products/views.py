@@ -355,6 +355,13 @@ class LogOutPage(LogoutView):
         # TODO redirect to company dashboard
         return resolve_url("products:product-list")
 
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context.update(
+            {"redirect_field_value": resolve_url("products:product-list")}
+        )
+        return context
+
 
 class SignUpPage(SignupView):
     template_name = "products/account/signup_products.html"
